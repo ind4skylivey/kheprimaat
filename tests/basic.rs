@@ -36,6 +36,7 @@ fn config_parser_reads_template() {
         ConfigParser::load_from_file("templates/config/default-scan.yaml").expect("config loads");
     assert!(!cfg.tools_enabled.is_empty());
     assert!(cfg.timeout_seconds > 0);
+    assert!(cfg.scope_strict);
 }
 
 #[test]
@@ -73,4 +74,29 @@ fn httpx_probe_parses_fixture() {
 
     assert_eq!(probes.len(), 3);
     assert_eq!(probes[0].status_code, 200);
+}
+
+#[test]
+fn report_includes_banner() {
+    use khepri::models::{ScanResult, ScanStatus};
+    use khepri::reporting::ReportGenerator;
+    use tempfile::NamedTempFile;
+    let scan = ScanResult {
+        id: Uuid::new_v4(),
+        target_id: Uuid::new_v4(),
+        config_id: Uuid::new_v4(),
+        findings: vec![],
+        started_at: chrono::Utc::now(),
+        ended_at: None,
+        status: ScanStatus::Completed,
+        error_message: None,
+        total_subdomains_discovered: 0,
+        total_endpoints_probed: 0,
+    };
+    let gen = ReportGenerator::new();
+    let tmp = NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+    gen.generate_html_report(&scan, &path).unwrap();
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("Khepri Scan Report"));
 }

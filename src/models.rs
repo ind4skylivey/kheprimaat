@@ -249,6 +249,11 @@ pub struct ScanConfig {
     pub slack_webhook: Option<String>,
     pub rate_limit_per_sec: Option<u32>,
     pub scope_strict: bool,
+    pub ffuf_wordlist: Option<String>,
+    pub ffuf_extensions: Vec<String>,
+    pub false_positive_patterns: Vec<String>,
+    pub max_findings_per_target: Option<u32>,
+    pub max_total_scan_time: Option<u64>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -273,6 +278,11 @@ impl Default for ScanConfig {
             slack_webhook: None,
             rate_limit_per_sec: None,
             scope_strict: true,
+            ffuf_wordlist: None,
+            ffuf_extensions: vec![],
+            false_positive_patterns: vec![],
+            max_findings_per_target: None,
+            max_total_scan_time: None,
             created_at: Utc::now(),
         }
     }

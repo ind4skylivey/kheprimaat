@@ -73,6 +73,7 @@ struct WebhookPayload {
     scan_id: String,
     total_findings: usize,
     by_severity: SeverityBreakdown,
+    findings: Vec<FindingSnippet>,
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -87,6 +88,7 @@ struct SeverityBreakdown {
 impl WebhookPayload {
     fn from_result(result: &ScanResult) -> Self {
         let mut breakdown = SeverityBreakdown::default();
+        let mut snippets = Vec::new();
         for finding in &result.findings {
             match finding.severity {
                 Severity::Critical => breakdown.critical += 1,
@@ -94,6 +96,14 @@ impl WebhookPayload {
                 Severity::Medium => breakdown.medium += 1,
                 Severity::Low => breakdown.low += 1,
                 Severity::Info => breakdown.info += 1,
+            }
+            if snippets.len() < 5 {
+                snippets.push(FindingSnippet {
+                    severity: finding.severity.to_string(),
+                    vuln_type: finding.vulnerability_type.to_string(),
+                    endpoint: finding.endpoint.clone(),
+                    evidence: finding.evidence.clone(),
+                });
             }
         }
 
@@ -103,6 +113,7 @@ impl WebhookPayload {
             scan_id: result.id.to_string(),
             total_findings: result.findings.len(),
             by_severity: breakdown,
+            findings: snippets,
         }
     }
 
@@ -124,7 +135,23 @@ impl WebhookPayload {
                 "elements": [
                     { "type": "mrkdwn", "text": format!("Critical: {}, High: {}, Medium: {}, Low: {}, Info: {}", self.by_severity.critical, self.by_severity.high, self.by_severity.medium, self.by_severity.low, self.by_severity.info) }
                 ]
+            },
+            {
+                "type": "divider"
+            }
+            ,
+            {
+                "type": "section",
+                "text": { "type": "mrkdwn", "text": format!("Top findings:\\n{}", self.findings.iter().map(|f| format!("• *{}* {} - {}", f.severity, f.vuln_type, f.endpoint)).collect::<Vec<_>>().join("\\n")) }
             }
         ])
     }
+}
+
+#[derive(Serialize, Debug)]
+struct FindingSnippet {
+    severity: String,
+    vuln_type: String,
+    endpoint: String,
+    evidence: String,
 }

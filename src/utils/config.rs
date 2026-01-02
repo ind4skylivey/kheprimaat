@@ -76,6 +76,48 @@ impl ConfigParser {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
+        let ffuf_wordlist = scan
+            .get("tools")
+            .and_then(|t| t.get("ffuf"))
+            .and_then(|f| f.get("wordlist"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let ffuf_extensions = scan
+            .get("tools")
+            .and_then(|t| t.get("ffuf"))
+            .and_then(|f| f.get("extensions"))
+            .and_then(|v| v.as_sequence())
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let false_positive_patterns = scan
+            .get("filters")
+            .and_then(|f| f.get("false_positive_filter"))
+            .and_then(|f| f.get("patterns"))
+            .and_then(|v| v.as_sequence())
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let max_findings_per_target = scan
+            .get("limits")
+            .and_then(|l| l.get("max_findings_per_target"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32);
+
+        let max_total_scan_time = scan
+            .get("limits")
+            .and_then(|l| l.get("max_total_scan_time"))
+            .and_then(|v| v.as_u64());
+
         let config = ScanConfig {
             id: None,
             name,
@@ -94,6 +136,11 @@ impl ConfigParser {
             slack_webhook,
             rate_limit_per_sec,
             scope_strict,
+            ffuf_wordlist,
+            ffuf_extensions,
+            false_positive_patterns,
+            max_findings_per_target,
+            max_total_scan_time,
             created_at: chrono::Utc::now(),
         };
 
