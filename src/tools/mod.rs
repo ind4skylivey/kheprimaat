@@ -6,6 +6,8 @@ pub mod subfinder;
 
 use crate::models::{Finding, HostProbe, ScanConfig, Target};
 use anyhow::Result;
+use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 #[derive(Clone, Debug)]
 pub struct ToolsManager {
@@ -48,4 +50,32 @@ pub fn binary_exists(name: &str) -> bool {
         }
     }
     false
+}
+
+pub async fn run_command_with_input(
+    program: &str,
+    args: &[&str],
+    stdin_data: Option<String>,
+    timeout_secs: u64,
+) -> Result<String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn()?;
+    if let Some(data) = stdin_data {
+        use tokio::io::AsyncWriteExt;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(data.as_bytes()).await?;
+        }
+    }
+
+    let output = timeout(
+        Duration::from_secs(timeout_secs.max(5)),
+        child.wait_with_output(),
+    )
+    .await??;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(stdout)
 }

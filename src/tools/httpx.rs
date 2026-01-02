@@ -1,11 +1,7 @@
-use anyhow::{anyhow, Result};
-use tokio::{
-    process::Command,
-    time::{timeout, Duration},
-};
+use anyhow::Result;
 use tracing::{info, warn};
 
-use super::binary_exists;
+use super::{binary_exists, run_command_with_input};
 use crate::models::{HostProbe, ScanConfig};
 
 pub async fn run_httpx(hosts: &[String], config: &ScanConfig) -> Result<Vec<HostProbe>> {
@@ -20,41 +16,30 @@ pub async fn run_httpx(hosts: &[String], config: &ScanConfig) -> Result<Vec<Host
         return Ok(vec![]);
     }
 
-    let mut cmd = Command::new("httpx");
-    cmd.arg("-json")
-        .arg("-silent")
-        .arg("-follow-redirects")
-        .arg("-nc")
-        .arg("-timeout")
-        .arg(config.timeout_seconds.to_string())
-        .arg("-threads")
-        .arg(config.concurrency.to_string());
+    let timeout_s = config.timeout_seconds.to_string();
+    let threads_s = config.concurrency.to_string();
+    let mut args = vec![
+        "-json",
+        "-silent",
+        "-follow-redirects",
+        "-nc",
+        "-timeout",
+        timeout_s.as_str(),
+        "-threads",
+        threads_s.as_str(),
+    ];
     if let Some(rl) = config.rate_limit_per_sec {
-        cmd.arg("-rate-limit").arg(rl.to_string());
-    }
-    let mut child = cmd
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()?;
-
-    {
-        use tokio::io::AsyncWriteExt;
-        let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("missing stdin"))?;
-        let joined = hosts.join("\n");
-        stdin.write_all(joined.as_bytes()).await?;
+        args.push("-rate-limit");
+        args.push(Box::leak(rl.to_string().into_boxed_str()));
     }
 
-    let output = timeout(
-        Duration::from_secs(config.timeout_seconds.max(60)),
-        child.wait_with_output(),
+    let stdout = run_command_with_input(
+        "httpx",
+        &args,
+        Some(hosts.join("\n")),
+        config.timeout_seconds.max(60),
     )
-    .await??;
-    if !output.status.success() {
-        warn!("httpx returned non-zero status");
-        return Ok(vec![]);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    .await?;
     let mut live = Vec::new();
     for line in stdout.lines() {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
