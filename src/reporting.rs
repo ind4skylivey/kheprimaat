@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::Engine;
 use handlebars::Handlebars;
 use serde::Serialize;
 use std::fs::File;
@@ -72,6 +73,7 @@ struct ReportContext<'a> {
     scan: &'a ScanResult,
     summary: SeveritySummary,
     total_findings: usize,
+    banner_base64: Option<String>,
 }
 
 #[derive(Serialize, Default)]
@@ -95,10 +97,14 @@ impl<'a> ReportContext<'a> {
                 Severity::Info => summary.info += 1,
             }
         }
+        let banner_base64 = std::fs::read("assets/banner.png")
+            .ok()
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
         Self {
             scan,
             summary,
             total_findings: scan.findings.len(),
+            banner_base64,
         }
     }
 }
@@ -126,6 +132,11 @@ const TEMPLATE: &str = r#"
 </head>
 <body>
   <h1>🔮 Khepri Scan Report</h1>
+  {{#if banner_base64}}
+  <div style="margin-bottom:16px;">
+    <img src="data:image/png;base64,{{banner_base64}}" alt="Khepri Banner" style="max-width:100%;height:auto;border-radius:8px;"/>
+  </div>
+  {{/if}}
   <p><strong>Scan ID:</strong> {{scan.id}}<br/>
      <strong>Target ID:</strong> {{scan.target_id}}<br/>
      <strong>Started:</strong> {{scan.started_at}}<br/>

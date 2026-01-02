@@ -20,15 +20,19 @@ pub async fn run_httpx(hosts: &[String], config: &ScanConfig) -> Result<Vec<Host
         return Ok(vec![]);
     }
 
-    let mut child = Command::new("httpx")
-        .arg("-json")
+    let mut cmd = Command::new("httpx");
+    cmd.arg("-json")
         .arg("-silent")
         .arg("-follow-redirects")
         .arg("-nc")
         .arg("-timeout")
         .arg(config.timeout_seconds.to_string())
         .arg("-threads")
-        .arg(config.concurrency.to_string())
+        .arg(config.concurrency.to_string());
+    if let Some(rl) = config.rate_limit_per_sec {
+        cmd.arg("-rate-limit").arg(rl.to_string());
+    }
+    let mut child = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()?;

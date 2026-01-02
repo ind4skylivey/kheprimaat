@@ -56,6 +56,14 @@ impl BugHunterOrchestrator {
             .run_httpx(&subdomains)
             .await
             .unwrap_or_default();
+        let probes = if self.config.scope_strict {
+            probes
+                .into_iter()
+                .filter(|p| in_scope(&self.target.scope, &p.url))
+                .collect::<Vec<_>>()
+        } else {
+            probes
+        };
         let live_hosts: Vec<String> = probes.iter().map(|p| p.url.clone()).collect();
 
         let mut findings: Vec<Finding> = Vec::new();
@@ -130,4 +138,16 @@ impl BugHunterOrchestrator {
             })
             .collect()
     }
+}
+
+fn in_scope(scope: &[String], url: &str) -> bool {
+    if let Ok(parsed) = url::Url::parse(url) {
+        if let Some(host) = parsed.host_str() {
+            return scope.iter().any(|s| {
+                let trimmed = s.trim_start_matches('*').trim_start_matches('.');
+                host == trimmed || host.ends_with(&format!(".{}", trimmed))
+            });
+        }
+    }
+    false
 }

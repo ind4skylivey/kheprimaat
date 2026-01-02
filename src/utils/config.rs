@@ -134,6 +134,16 @@ impl ScanConfig {
         if self.concurrency == 0 {
             return Err(anyhow!("concurrency must be > 0"));
         }
+        if let Some(url) = &self.webhook_url {
+            if !url.starts_with("http") {
+                return Err(anyhow!("webhook_url must be http/https"));
+            }
+        }
+        if let Some(url) = &self.slack_webhook {
+            if !url.starts_with("http") {
+                return Err(anyhow!("slack_webhook must be http/https"));
+            }
+        }
         Ok(())
     }
 }
