@@ -1,0 +1,4 @@
+[
+  {"url": "https://a.example.com/admin", "status": 200, "length": 5123, "words": 120},
+  {"url": "https://a.example.com/.git/config", "status": 200, "length": 220, "words": 15}
+]

@@ -1,0 +1,3 @@
+{"url":"https://a.example.com","status_code":200,"title":"Home","tech":["nginx","openssl"],"webserver":"nginx"}
+{"url":"https://b.example.com","status_code":403,"title":"Forbidden","tech":["cloudflare"]}
+{"url":"https://c.example.com","status_code":0,"error":"timeout"}

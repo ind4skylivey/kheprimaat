@@ -1,0 +1,59 @@
+# Khepri - security-first ignore (Rust CLI)
+
+############################
+# Secrets & auth
+############################
+.env
+.env.*
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+*.gpg
+auth.json
+**/credentials*
+.ssh/
+
+############################
+# Build / deps
+############################
+/target/
+Cargo.lock
+
+############################
+# Runtime outputs
+############################
+out*/
+runs/
+reports/
+logs/
+tmp/
+.cache/
+captures/
+pcaps/
+screenshots/
+scan-results/
+recon-data/
+wordlists/
+data/
+*.db
+*.sqlite*
+*.log
+
+############################
+# Editor / OS cruft
+############################
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+############################
+# Project-specific
+############################
+docs/

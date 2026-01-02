@@ -1,0 +1,8 @@
+[
+  {
+    "url": "https://a.example.com/login",
+    "risk": 3,
+    "type": "UNION",
+    "payload": "id=1 UNION SELECT NULL"
+  }
+]

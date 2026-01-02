@@ -1,0 +1,74 @@
+[package]
+name = "khepri"
+version = "0.1.0-alpha"
+edition = "2021"
+authors = ["Livey <livey@s1b.team>"]
+description = "Automated bug bounty hunting framework with multi-tool orchestration"
+repository = "https://github.com/S1b-Team/khepri"
+license-file = "LICENSE.txt"
+keywords = ["security", "bug-bounty", "automation", "recon", "vulnerability"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+# CLI & Async
+clap = { version = "4.4", features = ["derive", "cargo"] }
+tokio = { version = "1.35", features = ["full"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "sqlite", "postgres", "any", "macros", "uuid", "chrono"] }
+
+# HTTP & Network
+reqwest = { version = "0.11", features = ["json", "cookies", "stream"] }
+hyper = { version = "0.14", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# UUID & Time
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging & Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error Handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Templates & Reporting
+handlebars = "4.5"
+askama = "0.12"
+
+# Utilities
+regex = "1.10"
+lazy_static = "1.4"
+colored = "2.1"
+indicatif = "0.17"
+futures = "0.3"
+
+# Testing
+mockall = "0.12"
+tempfile = "3.8"
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = "0.5"
+
+[features]
+default = ["sqlite"]
+sqlite = ["sqlx/sqlite"]
+postgres = ["sqlx/postgres"]
+redis = []
+
+[[bin]]
+name = "khepri"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -1,0 +1,114 @@
+# Khepri - Default Scan Configuration
+
+scan_config:
+  name: "comprehensive-reconnaissance"
+  description: "Full-stack bug bounty scan with all available tools"
+  target: "example.com"
+
+  scope:
+    - "*.api.example.com"
+    - "app.example.com"
+    - "*.dev.example.com"
+    - "admin.example.com"
+
+  tools:
+    subfinder:
+      enabled: true
+      timeout_seconds: 30
+      sources: ["all"]
+
+    httpx:
+      enabled: true
+      timeout_seconds: 10
+      follow_redirects: true
+      extract_title: true
+      extract_tech: true
+      concurrency: 50
+
+    nuclei:
+      enabled: true
+      timeout_seconds: 120
+      templates:
+        - "auth-bypass"
+        - "sql-injection"
+        - "xss-detection"
+        - "information-disclosure"
+      custom_templates:
+        enabled: true
+        path: "./templates/nuclei/custom"
+      concurrency: 50
+      rate_limit: 500
+
+    sqlmap:
+      enabled: true
+      timeout_seconds: 60
+      risk_level: 2
+      test_level: 2
+
+    ffuf:
+      enabled: false
+      timeout_seconds: 45
+      wordlist: "/usr/share/wordlists/common.txt"
+      concurrency: 100
+
+  notifications:
+    webhook:
+      url: "https://your-api.com/findings"
+      method: "POST"
+      verify_ssl: true
+      retry_count: 3
+      timeout_seconds: 10
+
+  limits:
+    max_subdomain_enumeration_time: 300   # seconds
+    max_http_probing_time: 600
+    max_nuclei_scan_time: 1800
+    max_total_scan_time: 3600
+    max_findings_per_target: 5000
+
+  database:
+    type: "sqlite"
+    path: "./data/khepri.db"
+    backup_enabled: true
+    backup_interval_hours: 24
+    backup_retention_days: 30
+
+  logging:
+    level: "info"
+    format: "json"
+    output:
+      file: "./logs/khepri.log"
+      console: true
+
+profiles:
+  recon_only:
+    tools:
+      subfinder: { enabled: true }
+      httpx: { enabled: true }
+      nuclei: { enabled: false }
+      sqlmap: { enabled: false }
+    limits:
+      max_total_scan_time: 900
+
+  stealth:
+    tools:
+      subfinder: { enabled: true }
+      httpx: { enabled: true }
+      nuclei: { enabled: true, rate_limit: 50 }
+      sqlmap: { enabled: true, risk_level: 1 }
+    performance:
+      max_concurrent_tool_executions: 3
+      rate_limit_requests_per_second: 10
+
+  aggressive:
+    tools:
+      subfinder: { enabled: true }
+      httpx: { enabled: true, concurrency: 200 }
+      nuclei: { enabled: true, concurrency: 200, rate_limit: 5000 }
+      sqlmap: { enabled: true, risk_level: 3 }
+      ffuf: { enabled: true, concurrency: 500 }
+    performance:
+      max_concurrent_tool_executions: 20
+      rate_limit_requests_per_second: 500
+    limits:
+      max_total_scan_time: 1800
