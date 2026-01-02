@@ -57,6 +57,25 @@ impl ConfigParser {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let slack_webhook = scan
+            .get("notifications")
+            .and_then(|n| n.get("slack"))
+            .and_then(|w| w.get("webhook_url"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let rate_limit_per_sec = scan
+            .get("security")
+            .and_then(|s| s.get("rate_limit_requests_per_second"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32);
+
+        let scope_strict = scan
+            .get("security")
+            .and_then(|s| s.get("scope_strict"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
         let config = ScanConfig {
             id: None,
             name,
@@ -72,6 +91,9 @@ impl ConfigParser {
             exclude_endpoints: vec![],
             exclude_status_codes: vec![404, 403],
             webhook_url,
+            slack_webhook,
+            rate_limit_per_sec,
+            scope_strict,
             created_at: chrono::Utc::now(),
         };
 

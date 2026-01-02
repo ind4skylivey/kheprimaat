@@ -209,6 +209,43 @@ impl Database {
         }
         Ok(findings)
     }
+
+    pub async fn get_scan_with_findings(&self, scan_id: &Uuid) -> Result<ScanResult> {
+        let row = sqlx::query("SELECT * FROM scan_results WHERE id = $1")
+            .bind(scan_id.to_string())
+            .fetch_one(&self.pool)
+            .await?;
+
+        let findings_rows: Vec<AnyRow> = sqlx::query("SELECT * FROM findings WHERE scan_id = $1")
+            .bind(scan_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut scan = ScanResult {
+            id: *scan_id,
+            target_id: Uuid::parse_str(row.try_get::<String, _>("target_id")?.as_str())?,
+            config_id: Uuid::parse_str(row.try_get::<String, _>("config_id")?.as_str())?,
+            findings: Vec::new(),
+            started_at: parse_datetime(row.try_get::<String, _>("started_at")?),
+            ended_at: row
+                .try_get::<Option<String>, _>("ended_at")?
+                .map(|s| parse_datetime(s)),
+            status: parse_scan_status(row.try_get::<String, _>("status")?),
+            error_message: row.try_get("error_message")?,
+            total_subdomains_discovered: row
+                .try_get::<Option<i64>, _>("total_subdomains_discovered")?
+                .unwrap_or(0) as u32,
+            total_endpoints_probed: row
+                .try_get::<Option<i64>, _>("total_endpoints_probed")?
+                .unwrap_or(0) as u32,
+        };
+
+        for fr in findings_rows {
+            scan.findings.push(row_to_finding(&fr)?);
+        }
+
+        Ok(scan)
+    }
 }
 
 fn row_to_finding(row: &AnyRow) -> Result<Finding> {
@@ -281,5 +318,15 @@ fn parse_target_status(value: &str) -> TargetStatus {
         "failed" => TargetStatus::Failed,
         "paused" => TargetStatus::Paused,
         _ => TargetStatus::Pending,
+    }
+}
+
+fn parse_scan_status(value: String) -> crate::models::ScanStatus {
+    match value.to_lowercase().as_str() {
+        "completed" => crate::models::ScanStatus::Completed,
+        "failed" => crate::models::ScanStatus::Failed,
+        "cancelled" => crate::models::ScanStatus::Cancelled,
+        "running" => crate::models::ScanStatus::Running,
+        _ => crate::models::ScanStatus::Pending,
     }
 }

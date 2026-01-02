@@ -246,6 +246,9 @@ pub struct ScanConfig {
     pub exclude_endpoints: Vec<String>,
     pub exclude_status_codes: Vec<u16>,
     pub webhook_url: Option<String>,
+    pub slack_webhook: Option<String>,
+    pub rate_limit_per_sec: Option<u32>,
+    pub scope_strict: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -267,6 +270,9 @@ impl Default for ScanConfig {
             exclude_endpoints: vec!["/health".to_string(), "/status".to_string()],
             exclude_status_codes: vec![404, 403],
             webhook_url: None,
+            slack_webhook: None,
+            rate_limit_per_sec: None,
+            scope_strict: true,
             created_at: Utc::now(),
         }
     }

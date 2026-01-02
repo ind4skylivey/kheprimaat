@@ -36,6 +36,35 @@ impl ReportGenerator {
         info!("json report written to {output_path}");
         Ok(())
     }
+
+    pub fn generate_csv_report(&self, scan_result: &ScanResult, output_path: &str) -> Result<()> {
+        let mut wtr = csv::Writer::from_path(output_path)?;
+        wtr.write_record([
+            "severity",
+            "type",
+            "endpoint",
+            "payload",
+            "evidence",
+            "tool",
+            "verified",
+            "created_at",
+        ])?;
+        for f in &scan_result.findings {
+            wtr.write_record([
+                f.severity.to_string(),
+                f.vulnerability_type.to_string(),
+                f.endpoint.clone(),
+                f.payload.clone().unwrap_or_default(),
+                f.evidence.clone(),
+                f.tool_source.clone(),
+                f.verified.to_string(),
+                f.created_at.to_rfc3339(),
+            ])?;
+        }
+        wtr.flush()?;
+        info!("csv report written to {output_path}");
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
