@@ -60,6 +60,13 @@ curl -H "Authorization: Bearer mytoken" -H "Content-Type: application/json" \
 cargo run -- findings-list
 ```
 
+## ⚡ Power User Moves
+- One-liner scan+report: `cargo run -- scan-start $TARGET && xdg-open reports/$(ls -t reports | head -1)`
+- API blast: `http --auth-type bearer --auth mytoken POST :8080/scans target=$TARGET`
+- Tail live status: `curl -N -H 'Authorization: Bearer mytoken' http://127.0.0.1:8080/events`
+- Batch targets: `for d in $(cat scope.txt); do cargo run -- scan-start $d; done`
+- Fast diff of findings: `jq '.findings[]|[.severity,.endpoint,.tool_source]' reports/scan-*.json | sort | uniq -c`
+
 ## 🧩 Commands (CLI surface)
 - `server --bind <addr> --token <token>` start control API
 - `target-add|list|show|delete`
