@@ -86,7 +86,6 @@ cargo run -- findings-list
 - `templates/config/` scan profiles (`default-scan.yaml`)
 - `tests/` fixtures for parsers/SMTP/cancellation
 - `assets/` branding (banner, logo, about)
-- `docs/` reference (arch, install, quick start, roadmap)
 
 ## ▶️ Roadmap (concise)
 1) Queue/worker for scans + live progress (SSE/push).  
