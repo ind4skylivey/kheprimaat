@@ -1,5 +1,5 @@
 # 🦂⚖️ KhepriMaat — Offensive Recon & Vuln Automation  
-![Build](https://img.shields.io/github/actions/workflow/status/ind4skylivey/kheprimaat/ci.yml?label=CI&logo=github) ![Coverage](https://img.shields.io/badge/coverage-80%25%2B-blue) ![License](https://img.shields.io/badge/license-Private-red)
+![Build](https://img.shields.io/github/actions/workflow/status/ind4skylivey/kheprimaat/ci.yml?label=CI&logo=github) ![Coverage](https://img.shields.io/badge/coverage-80%25%2B-blue) ![License](https://img.shields.io/badge/license-Private-red) ![Rust](https://img.shields.io/badge/rust-2021-orange) ![DB](https://img.shields.io/badge/db-SQLite%20%7C%20Postgres-informational) ![Status](https://img.shields.io/badge/status-Lab%20use%20only-purple)
 
 ![KhepriMaat Banner](assets/banner.png)
 
@@ -41,7 +41,7 @@ KhepriMaat blends continual transformation (Khepri) with balance and truth (Maat
 - SQLite by default; Postgres-ready via `DATABASE_URL`.
 - Proprietary. Exclusive use by ind4skylivey.
 
-## 🚀 Quick Start (5-minute lab spin-up) ![Build](https://img.shields.io/github/actions/workflow/status/ind4skylivey/kheprimaat/ci.yml?label=CI&logo=github) ![Coverage](https://img.shields.io/badge/coverage-80%25%2B-blue)
+## 🚀 Quick Start (5-minute lab spin-up)
 ```bash
 cd /media/il1v3y/HD2/HDfiles/shenanigans/Repos/Personal/kheprimaat
 mkdir -p data reports logs
