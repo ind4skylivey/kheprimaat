@@ -69,7 +69,25 @@ pub fn merge_findings(findings: Vec<Finding>, strategy: MergeStrategy) -> Vec<Fi
         }
     }
 
-    grouped.into_values().collect()
+    grouped
+        .into_values()
+        .map(|mut f| {
+            let tools: Vec<&str> = f
+                .tags
+                .iter()
+                .filter_map(|t| match t.as_str() {
+                    "nuclei" | "sqlmap" | "ffuf" | "httpx" | "subfinder" => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let score = calculate_confidence_score(tools);
+            if !f.tags.iter().any(|t| t.starts_with("confidence:")) {
+                f.tags.push(format!("confidence:{:.2}", score));
+            }
+            f.confidence_score = Some(score);
+            f
+        })
+        .collect()
 }
 
 fn higher_severity(a: Severity, b: Severity) -> Severity {
@@ -78,4 +96,20 @@ fn higher_severity(a: Severity, b: Severity) -> Severity {
     } else {
         b
     }
+}
+
+/// Remove findings that match known false-positive patterns in endpoint or evidence.
+pub fn filter_false_positives(findings: Vec<Finding>, patterns: &[String]) -> Vec<Finding> {
+    if patterns.is_empty() {
+        return findings;
+    }
+    findings
+        .into_iter()
+        .filter(|f| {
+            !patterns.iter().any(|p| {
+                let p_l = p.to_lowercase();
+                f.endpoint.to_lowercase().contains(&p_l) || f.evidence.to_lowercase().contains(&p_l)
+            })
+        })
+        .collect()
 }

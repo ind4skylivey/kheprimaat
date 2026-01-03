@@ -21,6 +21,7 @@ auth.json
 ############################
 /target/
 Cargo.lock
+.cargo/
 
 ############################
 # Runtime outputs

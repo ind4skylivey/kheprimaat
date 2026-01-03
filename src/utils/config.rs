@@ -2,7 +2,8 @@ use anyhow::{anyhow, Result};
 use serde_yaml::Value;
 use std::fs;
 
-use crate::models::ScanConfig;
+use crate::models::{EmailSettings, ScanConfig, Severity};
+use crate::utils::config_store::ConfigOverrides;
 
 pub struct ConfigParser;
 
@@ -64,6 +65,18 @@ impl ConfigParser {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let discord_webhook = scan
+            .get("notifications")
+            .and_then(|n| n.get("discord"))
+            .and_then(|w| w.get("webhook_url"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let email = scan
+            .get("notifications")
+            .and_then(|n| n.get("email"))
+            .map(parse_email_settings);
+
         let rate_limit_per_sec = scan
             .get("security")
             .and_then(|s| s.get("rate_limit_requests_per_second"))
@@ -118,7 +131,7 @@ impl ConfigParser {
             .and_then(|l| l.get("max_total_scan_time"))
             .and_then(|v| v.as_u64());
 
-        let config = ScanConfig {
+        let mut config = ScanConfig {
             id: None,
             name,
             description: scan
@@ -134,6 +147,8 @@ impl ConfigParser {
             exclude_status_codes: vec![404, 403],
             webhook_url,
             slack_webhook,
+            discord_webhook,
+            email,
             rate_limit_per_sec,
             scope_strict,
             ffuf_wordlist,
@@ -144,8 +159,72 @@ impl ConfigParser {
             created_at: chrono::Utc::now(),
         };
 
+        apply_overrides(&mut config);
         config.validate_basic()?;
         Ok(config)
+    }
+}
+
+fn parse_email_settings(value: &Value) -> EmailSettings {
+    let send_above = value
+        .get("send_above")
+        .and_then(|v| v.as_str())
+        .map(|sev| match sev {
+            "critical" => Severity::Critical,
+            "high" => Severity::High,
+            "low" => Severity::Low,
+            "info" => Severity::Info,
+            _ => Severity::Medium,
+        });
+    EmailSettings {
+        smtp_server: value
+            .get("smtp_server")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        recipients: value
+            .get("recipients")
+            .and_then(|v| v.as_sequence())
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        from: value
+            .get("from")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        username: value
+            .get("username")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        password: value
+            .get("password")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        xoauth2_token: value
+            .get("xoauth2_token")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        auth_method: value
+            .get("auth_method")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        starttls: value.get("starttls").and_then(|v| v.as_bool()),
+        send_above,
+    }
+}
+
+fn apply_overrides(config: &mut ScanConfig) {
+    let overrides = ConfigOverrides::load();
+    if config.webhook_url.is_none() {
+        config.webhook_url = overrides.webhook_url;
+    }
+    if config.slack_webhook.is_none() {
+        config.slack_webhook = overrides.slack_webhook;
+    }
+    if config.discord_webhook.is_none() {
+        config.discord_webhook = overrides.discord_webhook;
     }
 }
 
@@ -189,6 +268,11 @@ impl ScanConfig {
         if let Some(url) = &self.slack_webhook {
             if !url.starts_with("http") {
                 return Err(anyhow!("slack_webhook must be http/https"));
+            }
+        }
+        if let Some(url) = &self.discord_webhook {
+            if !url.starts_with("http") {
+                return Err(anyhow!("discord_webhook must be http/https"));
             }
         }
         Ok(())

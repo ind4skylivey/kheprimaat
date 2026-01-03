@@ -1,4 +1,4 @@
-use khepri::{
+use kheprimaat::{
     filters::deduplication::deduplicate_findings,
     models::{Finding, HostProbe, Severity, VulnerabilityType},
     utils::config::ConfigParser,
@@ -68,6 +68,8 @@ fn httpx_probe_parses_fixture() {
                     .get("webserver")
                     .and_then(|t| t.as_str())
                     .map(|s| s.to_string()),
+                response_headers: None,
+                response_body: None,
             })
         })
         .collect();
@@ -78,8 +80,8 @@ fn httpx_probe_parses_fixture() {
 
 #[test]
 fn report_includes_banner() {
-    use khepri::models::{ScanResult, ScanStatus};
-    use khepri::reporting::ReportGenerator;
+    use kheprimaat::models::{ScanResult, ScanStatus};
+    use kheprimaat::reporting::ReportGenerator;
     use tempfile::NamedTempFile;
     let scan = ScanResult {
         id: Uuid::new_v4(),
@@ -92,6 +94,9 @@ fn report_includes_banner() {
         error_message: None,
         total_subdomains_discovered: 0,
         total_endpoints_probed: 0,
+        request_body: None,
+        response_body: None,
+        response_headers: None,
     };
     let gen = ReportGenerator::new();
     let tmp = NamedTempFile::new().unwrap();

@@ -68,7 +68,7 @@ scan_config:
 
   database:
     type: "sqlite"
-    path: "./data/khepri.db"
+    path: "./data/kheprimaat.db"
     backup_enabled: true
     backup_interval_hours: 24
     backup_retention_days: 30
@@ -77,7 +77,7 @@ scan_config:
     level: "info"
     format: "json"
     output:
-      file: "./logs/khepri.log"
+      file: "./logs/kheprimaat.log"
       console: true
 
 profiles:

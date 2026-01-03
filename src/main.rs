@@ -5,23 +5,37 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use khepri::{
+use kheprimaat::{
+    control,
     database::Database,
-    models::{ScanConfig, Target, TargetStatus},
+    models::{ScanConfig, ScanStatus, Target, TargetStatus},
     orchestrator::BugHunterOrchestrator,
-    utils::config::ConfigParser,
+    reporting::ReportGenerator,
+    utils::{config::ConfigParser, config_store::ConfigOverrides},
 };
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "khepri",
+    name = "kheprimaat",
     version,
-    about = "Automated bug bounty hunting framework"
+    about = "KhepriMaat bug bounty hunting framework"
 )]
 struct Cli {
     /// Database URL (sqlite:// or postgres://)
-    #[arg(long, default_value = "sqlite://data/khepri.db")]
+    #[arg(long, default_value = "sqlite://data/kheprimaat.db", global = true)]
     database_url: String,
+
+    /// Enable control API server (default: off)
+    #[arg(long, default_value_t = false)]
+    control_enable: bool,
+
+    /// Control server bind address (host:port)
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    control_bind: String,
+
+    /// Control server bearer token
+    #[arg(long)]
+    control_token: Option<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -39,6 +53,10 @@ enum Commands {
     },
     /// List targets
     TargetList,
+    /// Show a single target by id or domain
+    TargetShow { id_or_domain: String },
+    /// Delete a target by id or domain
+    TargetDelete { id_or_domain: String },
     /// Start a scan
     ScanStart {
         domain: String,
@@ -51,11 +69,22 @@ enum Commands {
         #[arg(long, default_value_t = true)]
         scope_strict: bool,
     },
+    /// List scans (optionally filter by domain)
+    ScanList {
+        #[arg(long)]
+        domain: Option<String>,
+    },
+    /// Show scan status/details
+    ScanStatus { scan_id: String },
+    /// Mark a scan as cancelled
+    ScanCancel { scan_id: String },
     /// List findings (optionally by domain)
     FindingsList {
         #[arg(long)]
         domain: Option<String>,
     },
+    /// Mark finding as verified
+    FindingsVerify { finding_id: String },
     /// Export findings (stdout)
     FindingsExport {
         #[arg(long, default_value = "json")]
@@ -74,14 +103,29 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Configure notification webhooks
+    ConfigWebhook { url: String },
+    /// Configure Slack webhook
+    ConfigSlack { url: String },
+    /// Configure Discord webhook
+    ConfigDiscord { url: String },
+    /// Create a named config from file
+    ConfigCreate { name: String, from_file: PathBuf },
     /// Initialize database schema
     DbInit,
+    /// Run control API server only
+    Server {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        bind: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("khepri=info".parse()?))
+        .with_env_filter(EnvFilter::from_default_env().add_directive("kheprimaat=info".parse()?))
         .with_target(false)
         .init();
 
@@ -92,6 +136,19 @@ async fn main() -> Result<()> {
     }
 
     let db = Database::new(&cli.database_url).await?;
+
+    if cli.control_enable {
+        let db_clone = db.clone();
+        let bind = cli.control_bind.clone();
+        let token = cli.control_token.clone();
+        tokio::spawn(async move {
+            if let Err(err) =
+                control::serve(db_clone.into(), &bind, control::ControlConfig { token }).await
+            {
+                eprintln!("control server failed: {err}");
+            }
+        });
+    }
 
     match cli.command {
         Commands::TargetAdd {
@@ -125,6 +182,25 @@ async fn main() -> Result<()> {
                 );
             }
         }
+        Commands::TargetShow { id_or_domain } => {
+            if let Some(t) = db.get_target(&id_or_domain).await? {
+                println!(
+                    "Target {} | scope={} | status={:?} | created_at={} | last_scan={:?} | notes={:?}",
+                    t.domain,
+                    t.scope.join(","),
+                    t.status,
+                    t.created_at,
+                    t.last_scan,
+                    t.notes
+                );
+            } else {
+                println!("Target not found");
+            }
+        }
+        Commands::TargetDelete { id_or_domain } => {
+            let removed = db.delete_target(&id_or_domain).await?;
+            println!("Deleted {} target(s)", removed);
+        }
         Commands::ScanStart {
             domain,
             config,
@@ -148,7 +224,18 @@ async fn main() -> Result<()> {
             let mut scan_config: ScanConfig = if let Some(path) = config {
                 ConfigParser::load_from_file(path.to_str().unwrap())?
             } else {
-                ScanConfig::default()
+                let mut cfg = ScanConfig::default();
+                let overrides = ConfigOverrides::load();
+                if cfg.webhook_url.is_none() {
+                    cfg.webhook_url = overrides.webhook_url;
+                }
+                if cfg.slack_webhook.is_none() {
+                    cfg.slack_webhook = overrides.slack_webhook;
+                }
+                if cfg.discord_webhook.is_none() {
+                    cfg.discord_webhook = overrides.discord_webhook;
+                }
+                cfg
             };
             if let Some(c) = concurrency {
                 scan_config.concurrency = c;
@@ -167,6 +254,43 @@ async fn main() -> Result<()> {
                 result.id
             );
         }
+        Commands::ScanList { domain } => {
+            let scans = db.list_scans(domain).await?;
+            for s in scans {
+                println!(
+                    "{} | target={} | status={:?} | started={} | ended={:?} | findings={}",
+                    s.id,
+                    s.target_id,
+                    s.status,
+                    s.started_at,
+                    s.ended_at,
+                    s.findings.len()
+                );
+            }
+        }
+        Commands::ScanStatus { scan_id } => {
+            let scan_uuid = uuid::Uuid::parse_str(&scan_id)?;
+            let scan = db.get_scan_with_findings(&scan_uuid).await?;
+            println!(
+                "Scan {} | status={:?} | started={} | ended={:?} | findings={}",
+                scan.id,
+                scan.status,
+                scan.started_at,
+                scan.ended_at,
+                scan.findings.len()
+            );
+        }
+        Commands::ScanCancel { scan_id } => {
+            let scan_uuid = uuid::Uuid::parse_str(&scan_id)?;
+            db.update_scan_status(
+                &scan_uuid,
+                ScanStatus::Cancelled,
+                Some("user cancelled".into()),
+            )
+            .await?;
+            db.set_scan_cancel(&scan_uuid).await?;
+            println!("Scan {} marked as cancelled", scan_id);
+        }
         Commands::FindingsList { domain } => {
             let findings = db.list_findings(domain).await?;
             for f in findings {
@@ -175,6 +299,11 @@ async fn main() -> Result<()> {
                     f.severity, f.vulnerability_type, f.endpoint, f.tool_source
                 );
             }
+        }
+        Commands::FindingsVerify { finding_id } => {
+            let fid = uuid::Uuid::parse_str(&finding_id)?;
+            db.verify_finding(&fid, true).await?;
+            println!("Marked finding {} as verified", finding_id);
         }
         Commands::FindingsExport { format } => {
             let findings = db.list_findings(None).await?;
@@ -218,7 +347,7 @@ async fn main() -> Result<()> {
             let scan_uuid = uuid::Uuid::parse_str(&scan_id)?;
             let scan = db.get_scan_with_findings(&scan_uuid).await?;
             tokio::fs::create_dir_all("reports").await?;
-            let generator = khepri::reporting::ReportGenerator::new();
+            let generator = ReportGenerator::new();
             let path = output
                 .unwrap_or_else(|| PathBuf::from(format!("reports/scan-{}.{}", scan_id, format)));
             match format.as_str() {
@@ -243,8 +372,44 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::ConfigWebhook { url } => {
+            let mut overrides = ConfigOverrides::load();
+            overrides.webhook_url = Some(url);
+            overrides.save()?;
+            println!("Default webhook saved to data/config_overrides.json");
+        }
+        Commands::ConfigSlack { url } => {
+            let mut overrides = ConfigOverrides::load();
+            overrides.slack_webhook = Some(url);
+            overrides.save()?;
+            println!("Default Slack webhook saved to data/config_overrides.json");
+        }
+        Commands::ConfigDiscord { url } => {
+            let mut overrides = ConfigOverrides::load();
+            overrides.discord_webhook = Some(url);
+            overrides.save()?;
+            println!("Default Discord webhook saved to data/config_overrides.json");
+        }
+        Commands::ConfigCreate { name, from_file } => {
+            tokio::fs::create_dir_all("templates/config").await?;
+            let dest = format!("templates/config/{}.yaml", name);
+            tokio::fs::copy(&from_file, &dest).await?;
+            println!("Saved config as {}", dest);
+        }
         Commands::DbInit => {
             println!("Database initialized at {}", cli.database_url);
+        }
+        Commands::Server { bind, token } => {
+            let db_clone = db.clone();
+            tokio::spawn(async move {
+                if let Err(err) =
+                    control::serve(db_clone.into(), &bind, control::ControlConfig { token }).await
+                {
+                    eprintln!("control server failed: {err}");
+                }
+            });
+            // keep running until killed
+            futures::future::pending::<()>().await;
         }
     }
 

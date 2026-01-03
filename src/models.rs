@@ -30,6 +30,19 @@ impl fmt::Display for Severity {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EmailSettings {
+    pub smtp_server: Option<String>,
+    pub recipients: Vec<String>,
+    pub from: Option<String>,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub xoauth2_token: Option<String>,
+    pub auth_method: Option<String>, // "plain"|"login"|"none"
+    pub starttls: Option<bool>,
+    pub send_above: Option<Severity>,
+}
+
 /// High-level vulnerability categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VulnerabilityType {
@@ -168,10 +181,14 @@ pub struct Finding {
     pub evidence: String,
     pub verified: bool,
     pub cvss_score: Option<f32>,
+    pub confidence_score: Option<f32>,
     pub owasp_category: Option<String>,
     pub remediation: Option<String>,
     pub created_at: DateTime<Utc>,
     pub tags: Vec<String>,
+    pub request_body: Option<String>,
+    pub response_body: Option<String>,
+    pub response_headers: Option<String>,
 }
 
 impl Finding {
@@ -196,10 +213,14 @@ impl Finding {
             evidence,
             verified: false,
             cvss_score: None,
+            confidence_score: None,
             owasp_category: None,
             remediation: None,
             created_at: Utc::now(),
             tags: vec![],
+            request_body: None,
+            response_body: None,
+            response_headers: None,
         }
     }
 
@@ -213,8 +234,18 @@ impl Finding {
         self
     }
 
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags.extend(tags);
+        self
+    }
+
     pub fn mark_verified(mut self) -> Self {
         self.verified = true;
+        self
+    }
+
+    pub fn with_confidence(mut self, score: f32) -> Self {
+        self.confidence_score = Some(score);
         self
     }
 }
@@ -247,6 +278,8 @@ pub struct ScanConfig {
     pub exclude_status_codes: Vec<u16>,
     pub webhook_url: Option<String>,
     pub slack_webhook: Option<String>,
+    pub discord_webhook: Option<String>,
+    pub email: Option<EmailSettings>,
     pub rate_limit_per_sec: Option<u32>,
     pub scope_strict: bool,
     pub ffuf_wordlist: Option<String>,
@@ -276,6 +309,8 @@ impl Default for ScanConfig {
             exclude_status_codes: vec![404, 403],
             webhook_url: None,
             slack_webhook: None,
+            discord_webhook: None,
+            email: None,
             rate_limit_per_sec: None,
             scope_strict: true,
             ffuf_wordlist: None,
@@ -300,6 +335,19 @@ pub struct ScanResult {
     pub error_message: Option<String>,
     pub total_subdomains_discovered: u32,
     pub total_endpoints_probed: u32,
+    pub request_body: Option<String>,
+    pub response_body: Option<String>,
+    pub response_headers: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanSummary {
+    pub id: Uuid,
+    pub target_id: Uuid,
+    pub status: ScanStatus,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub findings_count: u32,
 }
 
 impl ScanResult {
@@ -315,6 +363,9 @@ impl ScanResult {
             error_message: None,
             total_subdomains_discovered: 0,
             total_endpoints_probed: 0,
+            request_body: None,
+            response_body: None,
+            response_headers: None,
         }
     }
 
@@ -368,6 +419,8 @@ pub struct HostProbe {
     pub title: Option<String>,
     pub tech: Vec<String>,
     pub webserver: Option<String>,
+    pub response_headers: Option<String>,
+    pub response_body: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

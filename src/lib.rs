@@ -1,3 +1,4 @@
+pub mod control;
 pub mod database;
 pub mod filters;
 pub mod models;

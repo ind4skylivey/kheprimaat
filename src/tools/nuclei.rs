@@ -7,9 +7,14 @@ use tracing::{info, warn};
 
 use super::binary_exists;
 use crate::models::{Finding, ScanConfig, Severity, VulnerabilityType};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub async fn run_nuclei_scan(hosts: &[String], config: &ScanConfig) -> Result<Vec<Finding>> {
+pub async fn run_nuclei_scan(
+    hosts: &[String],
+    config: &ScanConfig,
+    cancel: Option<&CancellationToken>,
+) -> Result<Vec<Finding>> {
     if hosts.is_empty() || !config.tools_enabled.iter().any(|t| t == "nuclei") {
         return Ok(vec![]);
     }
@@ -20,7 +25,7 @@ pub async fn run_nuclei_scan(hosts: &[String], config: &ScanConfig) -> Result<Ve
 
     // Prepare temporary file with hosts
     let host_list = hosts.join("\n");
-    let temp_path = "/tmp/khepri-hosts.txt";
+    let temp_path = "/tmp/kheprimaat-hosts.txt";
     tokio::fs::write(temp_path, host_list.as_bytes()).await?;
 
     let mut cmd = Command::new("nuclei");
@@ -35,11 +40,16 @@ pub async fn run_nuclei_scan(hosts: &[String], config: &ScanConfig) -> Result<Ve
         cmd.arg("-tags").arg(config.nuclei_templates.join(","));
     }
 
-    let output = timeout(
-        Duration::from_secs(config.timeout_seconds.max(120)),
-        cmd.output(),
-    )
-    .await??;
+    let output = tokio::select! {
+        res = timeout(Duration::from_secs(config.timeout_seconds.max(120)), cmd.output()) => res??,
+        _ = async {
+            if let Some(token) = cancel {
+                token.cancelled().await;
+            }
+        } => {
+            return Ok(vec![]);
+        }
+    };
     if !output.status.success() {
         warn!("nuclei returned non-zero status; continuing without findings");
         return Ok(vec![]);
@@ -73,18 +83,51 @@ pub async fn run_nuclei_scan(hosts: &[String], config: &ScanConfig) -> Result<Ve
             };
             let vuln_type = map_template_to_vuln(&template);
 
+            let mut evidence_parts = vec![];
+            if let Some(extracted) = value.get("extracted-results").and_then(|e| e.as_array()) {
+                let joined = extracted
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                if !joined.is_empty() {
+                    evidence_parts.push(format!("extracted: {joined}"));
+                }
+            }
+            if let Some(m) = value.get("matcher-name").and_then(|m| m.as_str()) {
+                evidence_parts.push(format!("matcher: {m}"));
+            }
+            if let Some(matched) = value.get("matched-at").and_then(|m| m.as_str()) {
+                evidence_parts.push(format!("matched-at: {matched}"));
+            }
+            if let Some(req) = value.get("request").and_then(|r| r.as_str()) {
+                evidence_parts.push(format!("request: {}", req.trim()));
+            }
+            let mut response_body = None;
+            if let Some(resp) = value.get("response").and_then(|r| r.as_str()) {
+                response_body = Some(truncate(resp, 500));
+                evidence_parts.push(format!(
+                    "response: {}",
+                    resp.lines().take(3).collect::<Vec<_>>().join(" | ")
+                ));
+            }
+            let evidence = if evidence_parts.is_empty() {
+                template.clone()
+            } else {
+                evidence_parts.join(" ; ")
+            };
+
             let finding = Finding::new(
                 Uuid::nil(),
                 vuln_type,
                 severity,
                 endpoint.clone(),
-                value
-                    .get("matcher-name")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or(template.as_str())
-                    .to_string(),
+                evidence,
                 "nuclei".into(),
-            );
+            )
+            .with_tags(vec![template.clone(), "nuclei".into()]);
+            let mut finding = finding;
+            finding.response_body = response_body;
             findings.push(finding);
         }
     }
@@ -117,5 +160,35 @@ fn map_template_to_vuln(template: &str) -> VulnerabilityType {
         VulnerabilityType::MisconfiguredAwsS3
     } else {
         VulnerabilityType::Other
+    }
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.len() > max {
+        format!("{}... (truncated {})", &text[..max], text.len() - max)
+    } else {
+        text.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_template_basic() {
+        assert_eq!(
+            map_template_to_vuln("cve-2023-sqli"),
+            VulnerabilityType::SqlInjection
+        );
+        assert_eq!(
+            map_template_to_vuln("xss-reflected"),
+            VulnerabilityType::Xss
+        );
+    }
+
+    #[test]
+    fn truncate_short() {
+        assert_eq!(truncate("hi", 10), "hi".to_string());
     }
 }

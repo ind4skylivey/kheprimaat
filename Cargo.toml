@@ -1,10 +1,10 @@
 [package]
-name = "khepri"
+name = "kheprimaat"
 version = "0.1.0-alpha"
 edition = "2021"
-authors = ["Livey <livey@s1b.team>"]
-description = "Automated bug bounty hunting framework with multi-tool orchestration"
-repository = "https://github.com/S1b-Team/khepri"
+authors = ["Livey <ind4skylivey@proton.me>"]
+description = "KhepriMaat: evidence-first bug bounty automation (lab-focused, proprietary)"
+repository = "git@github.com:ind4skylivey/kheprimaat.git"
 license-file = "LICENSE.txt"
 keywords = ["security", "bug-bounty", "automation", "recon", "vulnerability"]
 categories = ["command-line-utilities", "development-tools"]
@@ -15,7 +15,8 @@ clap = { version = "4.4", features = ["derive", "cargo"] }
 tokio = { version = "1.35", features = ["full"] }
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "sqlite", "postgres", "any", "macros", "uuid", "chrono"] }
+# Enable AnyPool with SQLite/Postgres support; "any" requires explicit drivers enabled.
+sqlx = { version = "0.8.6", features = ["runtime-tokio-native-tls", "any", "sqlite", "postgres", "macros", "uuid", "chrono"] }
 
 # HTTP & Network
 reqwest = { version = "0.11", features = ["json", "cookies", "stream"] }
@@ -52,6 +53,16 @@ futures = "0.3"
 csv = "1.3"
 base64 = "0.22"
 url = "2.5"
+tokio-util = { version = "0.7", features = ["full"] }
+tokio-stream = "0.1"
+libc = "0.2"
+windows-sys = { version = "0.52", features = ["Win32_System_Threading"] }
+axum = { version = "0.7", default-features = false, features = ["macros", "json", "tokio", "http1", "query"] }
+tower = { version = "0.4", features = ["limit", "timeout", "util"] }
+tower-http = { version = "0.5", features = ["trace", "cors", "limit"] }
+
+# Email
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "tokio1", "tokio1-native-tls", "tracing"] }
 
 # Testing
 mockall = "0.12"
@@ -68,7 +79,7 @@ postgres = ["sqlx/postgres"]
 redis = []
 
 [[bin]]
-name = "khepri"
+name = "kheprimaat"
 path = "src/main.rs"
 
 [profile.release]

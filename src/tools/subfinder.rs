@@ -7,8 +7,13 @@ use tracing::{info, warn};
 
 use super::binary_exists;
 use crate::models::{ScanConfig, Target};
+use tokio_util::sync::CancellationToken;
 
-pub async fn run_subfinder(target: &Target, config: &ScanConfig) -> Result<Vec<String>> {
+pub async fn run_subfinder(
+    target: &Target,
+    config: &ScanConfig,
+    cancel: Option<&CancellationToken>,
+) -> Result<Vec<String>> {
     if !config.tools_enabled.iter().any(|t| t == "subfinder") {
         return Ok(vec![]);
     }
@@ -26,11 +31,16 @@ pub async fn run_subfinder(target: &Target, config: &ScanConfig) -> Result<Vec<S
         .stdout(std::process::Stdio::piped())
         .spawn()?;
 
-    let output = timeout(
-        Duration::from_secs(config.timeout_seconds.max(60)),
-        cmd.wait_with_output(),
-    )
-    .await??;
+    let output = tokio::select! {
+        res = timeout(Duration::from_secs(config.timeout_seconds.max(60)), cmd.wait_with_output()) => res??,
+        _ = async {
+            if let Some(token) = cancel {
+                token.cancelled().await;
+            }
+        } => {
+            return Ok(vec![]);
+        }
+    };
     if !output.status.success() {
         warn!("subfinder returned non-zero status");
         return Ok(vec![]);
