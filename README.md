@@ -67,6 +67,23 @@ cargo run -- findings-list
 - Batch targets: `for d in $(cat scope.txt); do cargo run -- scan-start $d; done`
 - Fast diff of findings: `jq '.findings[]|[.severity,.endpoint,.tool_source]' reports/scan-*.json | sort | uniq -c`
 
+## 🔌 Control API (Bearer + rate-limit)
+| Method | Path | What it does | Notes |
+| --- | --- | --- | --- |
+| POST | /scans | Queue a scan for `target`, optional `scope`/`config` | Returns `scan_id`, status=queued |
+| GET | /scans | List recent scans | Summaries only |
+| GET | /scans/:id/findings | Findings for a scan | Query: severity, verified, limit |
+| GET | /status/:id | Status + sample evidence | |
+| POST | /cancel/:id | Cancel a running scan | Sets cancel flag + status |
+| GET | /events | SSE stream of scan status | Keep-alive for dashboards |
+
+## 🛡️ Parsers & Evidence
+- **httpx**: status/title/headers/body (truncated), server tag
+- **nuclei**: matched-at, response-body (truncated), severity mapping
+- **sqlmap**: payload + technique into evidence
+- **ffuf**: discovered paths with status/length, confidence tag
+- All findings store request/response bodies/headers (for reports/exports)
+
 ## 🧩 Commands (CLI surface)
 - `server --bind <addr> --token <token>` start control API
 - `target-add|list|show|delete`
