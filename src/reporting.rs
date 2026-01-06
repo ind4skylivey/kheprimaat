@@ -7,14 +7,18 @@ use std::io::Write;
 use tracing::info;
 
 use crate::models::{ScanResult, Severity};
+use crate::utils::redaction::SecretRedactor;
 
-fn redact(s: &str) -> String {
-    s.to_string()
-}
-
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct ReportGenerator {
     hb: Handlebars<'static>,
+    redactor: SecretRedactor,
+}
+
+impl Default for ReportGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ReportGenerator {
@@ -22,11 +26,14 @@ impl ReportGenerator {
         let mut hb = Handlebars::new();
         hb.register_template_string("report", TEMPLATE)
             .expect("template compiles");
-        Self { hb }
+        Self { 
+            hb,
+            redactor: SecretRedactor::new(),
+        }
     }
 
     pub fn generate_html_report(&self, scan_result: &ScanResult, output_path: &str) -> Result<()> {
-        let context = ReportContext::from_result(scan_result);
+        let context = ReportContext::from_result(scan_result, &self.redactor);
         let html = self.hb.render("report", &context)?;
         let mut file = File::create(output_path)?;
         file.write_all(html.as_bytes())?;
@@ -35,7 +42,7 @@ impl ReportGenerator {
     }
 
     pub fn generate_json_report(&self, scan_result: &ScanResult, output_path: &str) -> Result<()> {
-        let redacted = redact_scan(scan_result);
+        let redacted = self.redact_scan(scan_result);
         let json = serde_json::to_string_pretty(&redacted)?;
         let mut file = File::create(output_path)?;
         file.write_all(json.as_bytes())?;
@@ -64,22 +71,37 @@ impl ReportGenerator {
                 f.severity.to_string(),
                 f.vulnerability_type.to_string(),
                 f.endpoint.clone(),
-                f.payload.clone().unwrap_or_default(),
-                redact(&f.evidence),
+                f.payload.as_ref().map(|p| self.redactor.redact(p)).unwrap_or_default(),
+                self.redactor.redact(&f.evidence),
                 f.tool_source.clone(),
                 f.confidence_score
                     .map(|c| format!("{:.2}", c))
                     .unwrap_or_default(),
                 f.verified.to_string(),
                 f.created_at.to_rfc3339(),
-                truncate_blob_opt(&f.request_body.as_ref().map(|v| redact(v))),
-                truncate_blob_opt(&f.response_body.as_ref().map(|v| redact(v))),
-                truncate_blob_opt(&f.response_headers.as_ref().map(|v| redact(v))),
+                truncate_blob_opt(&f.request_body.as_ref().map(|v| self.redactor.redact(v))),
+                truncate_blob_opt(&f.response_body.as_ref().map(|v| self.redactor.redact(v))),
+                truncate_blob_opt(&f.response_headers.as_ref().map(|v| self.redactor.redact(v))),
             ])?;
         }
         wtr.flush()?;
         info!("csv report written to {output_path}");
         Ok(())
+    }
+
+    fn redact_scan(&self, scan: &ScanResult) -> ScanResult {
+        let mut clone = scan.clone();
+        clone.request_body = clone.request_body.as_ref().map(|b| self.redactor.redact(b));
+        clone.response_body = clone.response_body.as_ref().map(|b| self.redactor.redact(b));
+        clone.response_headers = clone.response_headers.as_ref().map(|b| self.redactor.redact(b));
+        for f in clone.findings.iter_mut() {
+            f.evidence = self.redactor.redact(&f.evidence);
+            f.payload = f.payload.as_ref().map(|p| self.redactor.redact(p));
+            f.request_body = f.request_body.as_ref().map(|b| self.redactor.redact(b));
+            f.response_body = f.response_body.as_ref().map(|b| self.redactor.redact(b));
+            f.response_headers = f.response_headers.as_ref().map(|b| self.redactor.redact(b));
+        }
+        clone
     }
 }
 
@@ -120,7 +142,7 @@ struct SeveritySummary {
 }
 
 impl<'a> ReportContext<'a> {
-    fn from_result(scan: &'a ScanResult) -> Self {
+    fn from_result(scan: &'a ScanResult, redactor: &SecretRedactor) -> Self {
         let mut summary = SeveritySummary::default();
         for finding in &scan.findings {
             match finding.severity {
@@ -144,16 +166,16 @@ impl<'a> ReportContext<'a> {
                 severity: f.severity,
                 vulnerability_type: f.vulnerability_type.to_string(),
                 endpoint: f.endpoint.clone(),
-                evidence: redact(&f.evidence),
+                evidence: redactor.redact(&f.evidence),
                 tool_source: f.tool_source.clone(),
                 confidence_score: f.confidence_score,
                 verified: f.verified,
-                request_body: f.request_body.as_ref().map(|s| truncate_blob(&redact(s))),
-                response_body: f.response_body.as_ref().map(|s| truncate_blob(&redact(s))),
+                request_body: f.request_body.as_ref().map(|s| truncate_blob(&redactor.redact(s))),
+                response_body: f.response_body.as_ref().map(|s| truncate_blob(&redactor.redact(s))),
                 response_headers: f
                     .response_headers
                     .as_ref()
-                    .map(|s| truncate_blob(&redact(s))),
+                    .map(|s| truncate_blob(&redactor.redact(s))),
             })
             .collect();
         Self {
@@ -165,15 +187,15 @@ impl<'a> ReportContext<'a> {
             request_body: scan
                 .request_body
                 .as_ref()
-                .map(|s| truncate_blob(&redact(s))),
+                .map(|s| truncate_blob(&redactor.redact(s))),
             response_body: scan
                 .response_body
                 .as_ref()
-                .map(|s| truncate_blob(&redact(s))),
+                .map(|s| truncate_blob(&redactor.redact(s))),
             response_headers: scan
                 .response_headers
                 .as_ref()
-                .map(|s| truncate_blob(&redact(s))),
+                .map(|s| truncate_blob(&redactor.redact(s))),
             findings_redacted,
         }
     }
@@ -190,20 +212,6 @@ fn truncate_blob(s: &str) -> String {
 
 fn truncate_blob_opt(v: &Option<String>) -> String {
     v.as_ref().map(|s| truncate_blob(s)).unwrap_or_default()
-}
-
-fn redact_scan(scan: &ScanResult) -> ScanResult {
-    let mut clone = scan.clone();
-    clone.request_body = clone.request_body.take().map(|b| redact(&b));
-    clone.response_body = clone.response_body.take().map(|b| redact(&b));
-    clone.response_headers = clone.response_headers.take().map(|b| redact(&b));
-    for f in clone.findings.iter_mut() {
-        f.evidence = redact(&f.evidence);
-        f.request_body = f.request_body.take().map(|b| redact(&b));
-        f.response_body = f.response_body.take().map(|b| redact(&b));
-        f.response_headers = f.response_headers.take().map(|b| redact(&b));
-    }
-    clone
 }
 
 const TEMPLATE: &str = r#"

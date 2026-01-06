@@ -7,10 +7,12 @@ use uuid::Uuid;
 use crate::models::{
     Finding, ScanResult, ScanSummary, Severity, Target, TargetStatus, VulnerabilityType,
 };
+use crate::utils::redaction::SecretRedactor;
 
 #[derive(Clone)]
 pub struct Database {
     pool: AnyPool,
+    redactor: SecretRedactor,
 }
 
 impl Database {
@@ -23,7 +25,10 @@ impl Database {
             .connect(database_url)
             .await?;
 
-        let db = Self { pool };
+        let db = Self { 
+            pool,
+            redactor: SecretRedactor::new(),
+        };
         db.migrate().await?;
         Ok(db)
     }
@@ -198,6 +203,14 @@ impl Database {
 
     pub async fn insert_findings(&self, findings: &[Finding], scan_id: Option<Uuid>) -> Result<()> {
         for finding in findings {
+            // Apply secret redaction before storing
+            let redacted_payload = finding.payload.as_ref().map(|p| self.redactor.redact(p));
+            let redacted_evidence = self.redactor.redact(&finding.evidence);
+            let redacted_request_body = finding.request_body.as_ref().map(|r| self.redactor.redact(r));
+            let redacted_response_body = finding.response_body.as_ref().map(|r| self.redactor.redact(r));
+            let redacted_response_headers = finding.response_headers.as_ref().map(|h| self.redactor.redact(h));
+            let redacted_remediation = finding.remediation.as_ref().map(|r| self.redactor.redact(r));
+            
             sqlx::query(
             r#"INSERT OR REPLACE INTO findings
                    (id, target_id, scan_id, tool_source, vulnerability_type, severity, endpoint, payload, evidence, verified, cvss_score, confidence_score, owasp_category, remediation, created_at, tags, request_body, response_body, response_headers)
@@ -210,18 +223,18 @@ impl Database {
             .bind(format!("{:?}", finding.vulnerability_type))
             .bind(format!("{:?}", finding.severity))
             .bind(&finding.endpoint)
-            .bind(&finding.payload)
-            .bind(&finding.evidence)
+            .bind(&redacted_payload)
+            .bind(&redacted_evidence)
             .bind(finding.verified as i64)
             .bind(finding.cvss_score)
             .bind(finding.confidence_score)
             .bind(&finding.owasp_category)
-            .bind(&finding.remediation)
+            .bind(&redacted_remediation)
             .bind(finding.created_at.to_rfc3339())
             .bind(serde_json::to_string(&finding.tags)?)
-            .bind(&finding.request_body)
-            .bind(&finding.response_body)
-            .bind(&finding.response_headers)
+            .bind(&redacted_request_body)
+            .bind(&redacted_response_body)
+            .bind(&redacted_response_headers)
             .execute(&self.pool)
             .await?;
         }

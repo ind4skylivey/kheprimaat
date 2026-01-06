@@ -1,0 +1,196 @@
+# Secret Redaction Patterns Configuration
+# These patterns are used to detect and redact sensitive information in findings and reports
+# 
+# Pattern format:
+#   name: unique identifier for the pattern
+#   description: human-readable description
+#   regex: regular expression pattern to match secrets
+#   replacement: text to replace matched secrets with
+#   enabled: whether this pattern is active (true/false)
+
+patterns:
+  # AWS Credentials
+  - name: aws_access_key_id
+    description: AWS Access Key ID
+    regex: '(?i)(AKIA[0-9A-Z]{16})'
+    replacement: '***REDACTED-AWS-ACCESS-KEY***'
+    enabled: true
+
+  - name: aws_secret_access_key
+    description: AWS Secret Access Key
+    regex: '(?i)(aws_secret_access_key|secret_key)\s*[:=]\s*[''"]?([A-Za-z0-9/+=]{40})[''"]?'
+    replacement: '$1: "***REDACTED-AWS-SECRET***"'
+    enabled: true
+
+  - name: aws_session_token
+    description: AWS Session Token
+    regex: '(?i)(aws_session_token)\s*[:=]\s*[''"]?([A-Za-z0-9/+=]{100,})[''"]?'
+    replacement: '$1: "***REDACTED-AWS-SESSION-TOKEN***"'
+    enabled: true
+
+  # GitHub Tokens
+  - name: github_pat
+    description: GitHub Personal Access Token
+    regex: 'ghp_[a-zA-Z0-9]{36}'
+    replacement: '***REDACTED-GITHUB-PAT***'
+    enabled: true
+
+  - name: github_oauth
+    description: GitHub OAuth Token
+    regex: 'gho_[a-zA-Z0-9]{36}'
+    replacement: '***REDACTED-GITHUB-OAUTH***'
+    enabled: true
+
+  - name: github_app_token
+    description: GitHub App Token
+    regex: '(ghu|ghs)_[a-zA-Z0-9]{36}'
+    replacement: '***REDACTED-GITHUB-APP-TOKEN***'
+    enabled: true
+
+  # Generic API Keys
+  - name: generic_api_key
+    description: Generic API Key patterns
+    regex: '(?i)(api[_-]?key|apikey|api[_-]?token)\s*[:=]\s*[''"]?([a-zA-Z0-9_\-]{20,})[''"]?'
+    replacement: '$1: "***REDACTED-API-KEY***"'
+    enabled: true
+
+  # Bearer Tokens
+  - name: bearer_token
+    description: Bearer tokens in Authorization headers
+    regex: '(?i)Bearer\s+([a-zA-Z0-9\-._~+/]+=*)'
+    replacement: 'Bearer ***REDACTED-BEARER-TOKEN***'
+    enabled: true
+
+  # Basic Auth
+  - name: basic_auth
+    description: Basic authentication credentials
+    regex: '(?i)Basic\s+([A-Za-z0-9+/=]+)'
+    replacement: 'Basic ***REDACTED-BASIC-AUTH***'
+    enabled: true
+
+  # JWT Tokens
+  - name: jwt_token
+    description: JSON Web Tokens
+    regex: 'eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*'
+    replacement: '***REDACTED-JWT-TOKEN***'
+    enabled: true
+
+  # Private Keys
+  - name: private_key_rsa
+    description: RSA Private Keys
+    regex: '-----BEGIN RSA PRIVATE KEY-----[\s\S]*?-----END RSA PRIVATE KEY-----'
+    replacement: "-----BEGIN RSA PRIVATE KEY-----\n***REDACTED***\n-----END RSA PRIVATE KEY-----"
+    enabled: true
+
+  - name: private_key_generic
+    description: Generic Private Keys
+    regex: '-----BEGIN PRIVATE KEY-----[\s\S]*?-----END PRIVATE KEY-----'
+    replacement: "-----BEGIN PRIVATE KEY-----\n***REDACTED***\n-----END PRIVATE KEY-----"
+    enabled: true
+
+  - name: private_key_ec
+    description: EC Private Keys
+    regex: '-----BEGIN EC PRIVATE KEY-----[\s\S]*?-----END EC PRIVATE KEY-----'
+    replacement: "-----BEGIN EC PRIVATE KEY-----\n***REDACTED***\n-----END EC PRIVATE KEY-----"
+    enabled: true
+
+  # Database Connection Strings
+  - name: database_url_postgres
+    description: PostgreSQL connection strings
+    regex: 'postgres(?:ql)?://([^:]+):([^@]+)@'
+    replacement: 'postgres://$1:***REDACTED-PASSWORD***@'
+    enabled: true
+
+  - name: database_url_mysql
+    description: MySQL connection strings
+    regex: 'mysql://([^:]+):([^@]+)@'
+    replacement: 'mysql://$1:***REDACTED-PASSWORD***@'
+    enabled: true
+
+  - name: database_url_mongodb
+    description: MongoDB connection strings
+    regex: 'mongodb(?:\+srv)?://([^:]+):([^@]+)@'
+    replacement: 'mongodb://$1:***REDACTED-PASSWORD***@'
+    enabled: true
+
+  # Passwords
+  - name: password_key_value
+    description: Password in key-value format
+    regex: '(?i)(password|passwd|pwd)\s*[:=]\s*["'']?([^"''\s]{6,})["'']?'
+    replacement: '$1: "***REDACTED-PASSWORD***"'
+    enabled: true
+
+  # Slack Tokens
+  - name: slack_token
+    description: Slack API Tokens
+    regex: 'xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,}'
+    replacement: '***REDACTED-SLACK-TOKEN***'
+    enabled: true
+
+  - name: slack_webhook
+    description: Slack Webhook URLs
+    regex: 'https://hooks\.slack\.com/services/[A-Z0-9]+/[A-Z0-9]+/[a-zA-Z0-9]+'
+    replacement: '***REDACTED-SLACK-WEBHOOK***'
+    enabled: true
+
+  # Discord Webhooks
+  - name: discord_webhook
+    description: Discord Webhook URLs
+    regex: 'https://discord(?:app)?\.com/api/webhooks/[0-9]+/[a-zA-Z0-9_-]+'
+    replacement: '***REDACTED-DISCORD-WEBHOOK***'
+    enabled: true
+
+  # Google Cloud
+  - name: google_api_key
+    description: Google API Keys
+    regex: 'AIza[0-9A-Za-z_-]{35}'
+    replacement: '***REDACTED-GOOGLE-API-KEY***'
+    enabled: true
+
+  - name: google_oauth
+    description: Google OAuth tokens
+    regex: 'ya29\.[0-9A-Za-z_-]+'
+    replacement: '***REDACTED-GOOGLE-OAUTH***'
+    enabled: true
+
+  # Azure
+  - name: azure_client_secret
+    description: Azure Client Secrets
+    regex: '(?i)(client_secret)\s*[:=]\s*[''"]?([a-zA-Z0-9~._-]{34,})[''"]?'
+    replacement: '$1: "***REDACTED-AZURE-SECRET***"'
+    enabled: true
+
+  # Generic Secrets
+  - name: generic_secret
+    description: Generic secret patterns
+    regex: '(?i)(secret|token|credential)\s*[:=]\s*[''"]?([a-zA-Z0-9_\-+=/.]{20,})[''"]?'
+    replacement: '$1: "***REDACTED-SECRET***"'
+    enabled: true
+
+  # Credit Cards (PCI compliance)
+  - name: credit_card
+    description: Credit card numbers
+    regex: '\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|6(?:011|5[0-9]{2})[0-9]{12}|(?:2131|1800|35\d{3})\d{11})\b'
+    replacement: '***REDACTED-CREDIT-CARD***'
+    enabled: true
+
+  # Optional patterns (disabled by default)
+  - name: email_address
+    description: Email addresses (disabled by default as they might be legitimate findings)
+    regex: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    replacement: '***REDACTED-EMAIL***'
+    enabled: false
+
+  - name: ip_address
+    description: IPv4 addresses (disabled by default as IPs are often part of findings)
+    regex: '\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'
+    replacement: '***REDACTED-IP***'
+    enabled: false
+
+# Custom patterns can be added here
+# Example:
+# - name: custom_token
+#   description: Custom application token
+#   regex: 'MYAPP-[A-Z0-9]{32}'
+#   replacement: '***REDACTED-CUSTOM-TOKEN***'
+#   enabled: true

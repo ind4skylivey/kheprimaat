@@ -13,6 +13,7 @@ use crate::{
     notifications::NotificationManager,
     reporting::ReportGenerator,
     tools::ToolsManager,
+    queue::{EventBus, ScanEvent},
 };
 
 #[derive(Clone)]
@@ -25,6 +26,7 @@ pub struct BugHunterOrchestrator {
     pub reporter: ReportGenerator,
     pub cancel_token: CancellationToken,
     forced_scan_id: Option<Uuid>,
+    event_bus: Option<EventBus>,
 }
 
 impl BugHunterOrchestrator {
@@ -49,6 +51,7 @@ impl BugHunterOrchestrator {
             reporter,
             cancel_token,
             forced_scan_id: None,
+            event_bus: None,
         }
     }
 
@@ -56,6 +59,11 @@ impl BugHunterOrchestrator {
         let mut s = Self::new(config, target, db);
         s.forced_scan_id = Some(scan_id);
         s
+    }
+
+    pub fn with_event_bus(mut self, event_bus: EventBus) -> Self {
+        self.event_bus = Some(event_bus);
+        self
     }
 
     pub async fn run_full_scan(&self) -> Result<ScanResult> {
@@ -95,6 +103,9 @@ impl BugHunterOrchestrator {
             };
         }
 
+        // Emit stage change event
+        self.emit_stage_event("subfinder", 0.0).await;
+        
         info!("running subfinder for {}", self.target.domain);
         let subdomains = self
             .tools_manager
@@ -102,6 +113,12 @@ impl BugHunterOrchestrator {
             .await?;
         check_deadline!();
 
+        // Emit progress event
+        self.emit_progress_event("subfinder", subdomains.len(), subdomains.len()).await;
+
+        // Emit stage change event
+        self.emit_stage_event("httpx", 0.25).await;
+        
         info!("running httpx probing");
         let probes: Vec<HostProbe> = self
             .tools_manager
@@ -120,31 +137,55 @@ impl BugHunterOrchestrator {
 
         let mut findings: Vec<Finding> = Vec::new();
 
+        // Emit stage change event
+        self.emit_stage_event("nuclei", 0.5).await;
+        
         info!("running nuclei");
         let nuclei_findings = self
             .tools_manager
             .run_nuclei(&live_hosts, Some(&self.cancel_token))
             .await
             .unwrap_or_default();
-        findings.extend(self.attach_target(nuclei_findings));
+        findings.extend(self.attach_target(nuclei_findings.clone()));
+        
+        // Emit findings discovered
+        for finding in &nuclei_findings {
+            self.emit_finding_event(finding).await;
+        }
         check_deadline!();
 
+        // Emit stage change event
+        self.emit_stage_event("sqlmap", 0.7).await;
+        
         info!("running sqlmap");
         let sqlmap_findings = self
             .tools_manager
             .run_sqlmap(&live_hosts, Some(&self.cancel_token))
             .await
             .unwrap_or_default();
-        findings.extend(self.attach_target(sqlmap_findings));
+        findings.extend(self.attach_target(sqlmap_findings.clone()));
+        
+        // Emit findings discovered
+        for finding in &sqlmap_findings {
+            self.emit_finding_event(finding).await;
+        }
         check_deadline!();
 
+        // Emit stage change event
+        self.emit_stage_event("ffuf", 0.85).await;
+        
         info!("running ffuf");
         let ffuf_findings = self
             .tools_manager
             .run_ffuf(&live_hosts, Some(&self.cancel_token))
             .await
             .unwrap_or_default();
-        findings.extend(self.attach_target(ffuf_findings));
+        findings.extend(self.attach_target(ffuf_findings.clone()));
+        
+        // Emit findings discovered
+        for finding in &ffuf_findings {
+            self.emit_finding_event(finding).await;
+        }
 
         let filtered = filter_false_positives(findings, &self.config.false_positive_patterns);
 
@@ -221,6 +262,44 @@ impl BugHunterOrchestrator {
                 f
             })
             .collect()
+    }
+
+    async fn emit_stage_event(&self, stage: &str, progress: f32) {
+        if let Some(ref bus) = self.event_bus {
+            let scan_id = self.forced_scan_id.unwrap_or_else(Uuid::new_v4);
+            bus.publish(ScanEvent::StageChanged {
+                scan_id,
+                stage: stage.to_string(),
+                progress,
+                timestamp: chrono::Utc::now(),
+            }).await;
+        }
+    }
+
+    async fn emit_progress_event(&self, stage: &str, current: usize, total: usize) {
+        if let Some(ref bus) = self.event_bus {
+            let scan_id = self.forced_scan_id.unwrap_or_else(Uuid::new_v4);
+            bus.publish(ScanEvent::Progress {
+                scan_id,
+                stage: stage.to_string(),
+                current,
+                total,
+                timestamp: chrono::Utc::now(),
+            }).await;
+        }
+    }
+
+    async fn emit_finding_event(&self, finding: &Finding) {
+        if let Some(ref bus) = self.event_bus {
+            let scan_id = self.forced_scan_id.unwrap_or_else(Uuid::new_v4);
+            bus.publish(ScanEvent::FindingDiscovered {
+                scan_id,
+                severity: finding.severity.to_string(),
+                vulnerability_type: finding.vulnerability_type.to_string(),
+                endpoint: finding.endpoint.clone(),
+                timestamp: chrono::Utc::now(),
+            }).await;
+        }
     }
 }
 

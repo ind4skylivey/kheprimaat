@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::{database::Database, models::ScanStatus};
+use crate::{database::Database, models::ScanStatus, queue::{ScanQueue, ScanJob, WorkerPool}};
 
 #[derive(Clone)]
 pub struct ControlConfig {
@@ -62,6 +62,7 @@ mod tests {
 pub struct AppState {
     pub db: Arc<Database>,
     pub auth: AuthState,
+    pub queue: Arc<ScanQueue>,
 }
 
 #[derive(Clone)]
@@ -75,6 +76,12 @@ pub async fn serve(db: Arc<Database>, bind: &str, cfg: ControlConfig) -> anyhow:
     use tower_http::limit::RequestBodyLimitLayer;
     use tower_http::trace::TraceLayer;
 
+    // Create queue with capacity of 100 pending jobs
+    let queue = Arc::new(ScanQueue::new(100));
+    
+    // Start worker pool with 3 workers
+    let _worker_pool = WorkerPool::new(3, db.clone(), &queue);
+    
     let state = AppState {
         db,
         auth: AuthState {
@@ -88,6 +95,7 @@ pub async fn serve(db: Arc<Database>, bind: &str, cfg: ControlConfig) -> anyhow:
                 ..Default::default()
             },
         },
+        queue,
     };
 
     let app = Router::new()
@@ -183,32 +191,44 @@ async fn list_scans(State(app): State<AppState>) -> impl IntoResponse {
     }
 }
 
+#[derive(Deserialize)]
+struct EventsQuery {
+    scan_id: Option<String>,
+}
+
 async fn stream_events(
     State(app): State<AppState>,
+    Query(params): Query<EventsQuery>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
-    use tokio_stream::{wrappers::IntervalStream, StreamExt};
-    let stream = IntervalStream::new(tokio::time::interval(std::time::Duration::from_secs(2)))
-        .then(move |_| {
-            let db = app.db.clone();
-            async move {
-                let scans = db.list_scan_summaries(10).await.unwrap_or_default();
-                let payload = json!({
-                    "type": "scan_status",
-                    "scans": scans.iter().map(|s| {
-                        json!({
-                            "scan_id": s.id,
-                            "status": format!("{:?}", s.status),
-                            "started_at": s.started_at,
-                            "ended_at": s.ended_at,
-                            "findings": s.findings_count
-                        })
-                    }).collect::<Vec<_>>()
-                });
-                Event::default().data(payload.to_string())
-            }
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+    use tokio_stream::StreamExt;
+    
+    // Subscribe to the event bus (filtered or unfiltered)
+    let rx = if let Some(scan_id_str) = params.scan_id {
+        // Try to parse scan_id and subscribe with filter
+        if let Ok(scan_id) = Uuid::parse_str(&scan_id_str) {
+            app.queue.event_bus().subscribe_filtered(scan_id).await
+        } else {
+            // Invalid scan_id, subscribe to all events
+            app.queue.event_bus().subscribe().await
+        }
+    } else {
+        // No filter, subscribe to all events
+        app.queue.event_bus().subscribe().await
+    };
+    
+    let stream = UnboundedReceiverStream::new(rx)
+        .map(|event| {
+            let json_data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
+            Event::default().data(json_data)
         })
         .map(Ok);
-    Sse::new(stream)
+    
+    Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(30))
+            .text("keepalive")
+    )
 }
 
 async fn list_findings(
@@ -263,11 +283,6 @@ async fn create_scan(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(|| vec![target.clone(), format!("*.{}", target)]);
-    let _config = body
-        .get("config")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "default-scan".to_string());
 
     let target_model = crate::models::Target {
         id: Some(Uuid::new_v4()),
@@ -278,7 +293,17 @@ async fn create_scan(
         last_scan: None,
         notes: None,
     };
-    let target_model = app.db.upsert_target(&target_model).await.unwrap();
+    
+    let target_model = match app.db.upsert_target(&target_model).await {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to create target: {}", e)})),
+            )
+        }
+    };
+    
     let scan_id = Uuid::new_v4();
 
     // Try to load config by name from templates; fallback to default
@@ -289,22 +314,35 @@ async fn create_scan(
         crate::models::ScanConfig::default()
     };
 
-    let db_for_run = (*app.db).clone();
-    let target_for_run = target_model.clone();
-    tokio::spawn(async move {
-        let orchestrator = crate::orchestrator::BugHunterOrchestrator::with_scan_id(
-            scan_config,
-            target_for_run,
-            db_for_run,
-            scan_id,
+    // Create scan record in database with pending status
+    let scan_result = crate::models::ScanResult::new(
+        target_model.id.unwrap(),
+        scan_config.id.unwrap_or_else(Uuid::new_v4),
+    );
+    let mut scan_result_with_id = scan_result;
+    scan_result_with_id.id = scan_id;
+    scan_result_with_id.status = crate::models::ScanStatus::Pending;
+    
+    if let Err(e) = app.db.save_scan(&scan_result_with_id).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to save scan: {}", e)})),
         );
-        let _ = orchestrator.run_full_scan().await;
-    });
+    }
 
-    (
-        StatusCode::ACCEPTED,
-        Json(json!({ "scan_id": scan_id, "status": "queued" })),
-    )
+    // Create job and enqueue
+    let job = ScanJob::new(scan_id, target_model, scan_config);
+    
+    match app.queue.enqueue(job).await {
+        Ok(_) => (
+            StatusCode::ACCEPTED,
+            Json(json!({ "scan_id": scan_id, "status": "queued" })),
+        ),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": format!("Queue full: {}", e)})),
+        ),
+    }
 }
 
 async fn auth_middleware(

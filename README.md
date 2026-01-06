@@ -30,8 +30,8 @@ KhepriMaat blends continual transformation (Khepri) with balance and truth (Maat
 - Defaults scoped to local lab: bind 127.0.0.1, token required, sqlite://data/kheprimaat.db.
 
 **Road ahead**
-- Worker/queue for scans with live progress push.
-- Secret-aware redaction in stored evidence.
+- ✅ **Worker/queue for scans with live progress push** (IMPLEMENTED)
+- ✅ **Secret-aware redaction in stored evidence** (IMPLEMENTED)
 - Container/packaging for isolated lab deploys.
 
 ## ⚡ Why KhepriMaat
@@ -83,6 +83,7 @@ cargo run -- findings-list
 - **sqlmap**: payload + technique into evidence
 - **ffuf**: discovered paths with status/length, confidence tag
 - All findings store request/response bodies/headers (for reports/exports)
+- **🆕 Automatic secret redaction** applied to all evidence before storage/export
 
 ## 🧩 Commands (CLI surface)
 - `server --bind <addr> --token <token>` start control API
@@ -104,6 +105,7 @@ cargo run -- findings-list
 - Bearer-protected control API bound to 127.0.0.1 by default
 - Timeouts + soft-fail paths in adapters; dedup + confidence scoring
 - Evidence persisted (requests/responses) and exported to reports
+- **🆕 Automatic secret redaction** in DB storage and reports (30+ patterns: AWS, GitHub, JWT, private keys, etc.)
 
 ## 📂 Layout
 - `src/` core (models, orchestrator, tools, DB, reporting, notifications, control API)
@@ -112,7 +114,70 @@ cargo run -- findings-list
 - `assets/` branding (banner, logo, about)
 
 ## ▶️ Roadmap (concise)
-1) Queue/worker for scans + live progress (SSE/push).  
-2) Secret-aware redaction across stored evidence.  
+1) ✅ **Queue/worker for scans + live progress (SSE/push)** (COMPLETED - see `docs/QUEUE_WORKER_SYSTEM.md`)  
+2) ✅ **Secret-aware redaction across stored evidence** (COMPLETED - see `docs/SECRET_REDACTION.md`)  
 3) Packaging: container image + lab bootstrap.  
 4) Red-team UX: richer reports, timeline view, and webhook templating.
+
+## 🚀 Async Queue/Worker System (NEW!)
+
+KhepriMaat now features a robust asynchronous queue/worker system for background scan execution with real-time progress updates.
+
+**Features:**
+- **Async execution**: API returns immediately with scan ID
+- **Worker pool**: 3 concurrent workers by default (configurable)
+- **Real-time events**: SSE streaming with 8 event types
+- **Per-scan filtering**: Subscribe to events for specific scans
+- **Connection tracking**: Monitor active SSE clients
+- **Retry logic**: Automatic retry with exponential backoff (3 attempts)
+- **Graceful shutdown**: Clean termination of in-flight scans
+- **Bounded queue**: 100 job capacity (prevents resource exhaustion)
+
+**Event Types:**
+- `queued`, `started`, `stage_changed`, `progress`, `finding_discovered`, `completed`, `failed`, `cancelled`
+
+**Quick Example:**
+```bash
+# Create scan (returns immediately)
+curl -X POST http://localhost:3000/scans \
+  -d '{"target":"example.com"}' | jq
+# {"scan_id":"abc-123","status":"queued"}
+
+# Stream ALL events (unfiltered)
+curl -N http://localhost:3000/events
+
+# Stream events for SPECIFIC scan (filtered)
+curl -N "http://localhost:3000/events?scan_id=abc-123"
+# data: {"type":"started","scan_id":"abc-123","worker_id":0,...}
+# data: {"type":"stage_changed","stage":"subfinder","progress":0.0,...}
+# data: {"type":"finding_discovered","severity":"high",...}
+# data: {"type":"completed","duration_secs":120,"findings_count":8,...}
+```
+
+📖 **Full documentation:** [`docs/QUEUE_WORKER_SYSTEM.md`](docs/QUEUE_WORKER_SYSTEM.md)  
+📖 **SSE filtering guide:** [`docs/ENHANCED_SSE.md`](docs/ENHANCED_SSE.md)
+
+---
+
+## 🔒 Secret Redaction (NEW!)
+
+KhepriMaat includes comprehensive automatic secret redaction to protect sensitive data in findings and reports.
+
+**Features:**
+- 30+ built-in patterns (AWS, GitHub, Google, Azure, JWT, private keys, etc.)
+- Automatic redaction at DB storage and report generation
+- Configurable patterns via YAML
+- Zero configuration required - works out of the box
+- Performance optimized (< 5% overhead)
+
+**Redacted Fields:**
+- Evidence, payloads, request/response bodies, headers, remediation text
+
+**Quick Example:**
+```bash
+# Before: "AWS_KEY=AKIAIOSFODNN7EXAMPLE"
+# After:  "AWS_KEY=***REDACTED-AWS-ACCESS-KEY***"
+```
+
+📖 **Full documentation:** [`docs/SECRET_REDACTION.md`](docs/SECRET_REDACTION.md)  
+⚙️ **Pattern configuration:** [`templates/config/redaction-patterns.yaml`](templates/config/redaction-patterns.yaml)
