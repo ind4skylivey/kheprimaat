@@ -14,7 +14,12 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::{database::Database, models::ScanStatus, queue::{ScanQueue, ScanJob, WorkerPool}};
+use crate::{
+    database::Database, 
+    models::ScanStatus, 
+    queue::{ScanQueue, ScanJob, WorkerPool},
+    metrics::MetricsCollector,
+};
 
 #[derive(Clone)]
 pub struct ControlConfig {
@@ -63,6 +68,7 @@ pub struct AppState {
     pub db: Arc<Database>,
     pub auth: AuthState,
     pub queue: Arc<ScanQueue>,
+    pub metrics: Arc<MetricsCollector>,
 }
 
 #[derive(Clone)]
@@ -82,6 +88,9 @@ pub async fn serve(db: Arc<Database>, bind: &str, cfg: ControlConfig) -> anyhow:
     // Start worker pool with 3 workers
     let _worker_pool = WorkerPool::new(3, db.clone(), &queue);
     
+    // Create metrics collector
+    let metrics = Arc::new(MetricsCollector::new(db.clone(), queue.event_bus()));
+    
     let state = AppState {
         db,
         auth: AuthState {
@@ -96,6 +105,7 @@ pub async fn serve(db: Arc<Database>, bind: &str, cfg: ControlConfig) -> anyhow:
             },
         },
         queue,
+        metrics,
     };
 
     let app = Router::new()
@@ -105,6 +115,8 @@ pub async fn serve(db: Arc<Database>, bind: &str, cfg: ControlConfig) -> anyhow:
         .route("/scans/:scan_id/findings", get(list_findings))
         .route("/scans", post(create_scan))
         .route("/events", get(stream_events))
+        .route("/metrics", get(get_metrics))
+        .route("/stats", get(get_metrics)) // Alias for /metrics
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
             state.auth.clone(),
@@ -341,6 +353,19 @@ async fn create_scan(
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"error": format!("Queue full: {}", e)})),
+        ),
+    }
+}
+
+async fn get_metrics(State(app): State<AppState>) -> impl IntoResponse {
+    match app.metrics.get_metrics().await {
+        Ok(metrics) => (
+            StatusCode::OK,
+            Json(json!(metrics)),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
         ),
     }
 }

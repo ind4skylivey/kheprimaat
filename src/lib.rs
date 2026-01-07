@@ -1,6 +1,7 @@
 pub mod control;
 pub mod database;
 pub mod filters;
+pub mod metrics;
 pub mod models;
 pub mod notifications;
 pub mod orchestrator;

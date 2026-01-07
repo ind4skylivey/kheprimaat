@@ -116,8 +116,9 @@ cargo run -- findings-list
 ## ▶️ Roadmap (concise)
 1) ✅ **Queue/worker for scans + live progress (SSE/push)** (COMPLETED - see `docs/QUEUE_WORKER_SYSTEM.md`)  
 2) ✅ **Secret-aware redaction across stored evidence** (COMPLETED - see `docs/SECRET_REDACTION.md`)  
-3) Packaging: container image + lab bootstrap.  
-4) Red-team UX: richer reports, timeline view, and webhook templating.
+3) ✅ **Metrics/Stats endpoint for operational visibility** (COMPLETED - see `docs/METRICS_ENDPOINT.md`)
+4) Packaging: container image + lab bootstrap.  
+5) Red-team UX: richer reports, timeline view, and webhook templating.
 
 ## 🚀 Async Queue/Worker System (NEW!)
 
@@ -181,3 +182,50 @@ KhepriMaat includes comprehensive automatic secret redaction to protect sensitiv
 
 📖 **Full documentation:** [`docs/SECRET_REDACTION.md`](docs/SECRET_REDACTION.md)  
 ⚙️ **Pattern configuration:** [`templates/config/redaction-patterns.yaml`](templates/config/redaction-patterns.yaml)
+
+---
+
+## 📊 Metrics & Monitoring (NEW!)
+
+KhepriMaat provides comprehensive system metrics for operational visibility.
+
+**Endpoints:**
+- `GET /metrics` - System metrics with 30s cache
+- `GET /stats` - Alias for /metrics
+
+**Features:**
+- **Scan metrics**: Total, success rate, avg duration, by status
+- **Finding metrics**: By severity/tool, verified rate
+- **System health**: Queue, workers, SSE connections, uptime
+- **Auto-caching**: 30-second TTL for performance
+- **Dashboard-ready**: JSON format for easy integration
+
+**Quick Example:**
+```bash
+curl http://localhost:3000/metrics | jq
+```
+
+**Response:**
+```json
+{
+  "scans": {
+    "total": 1523,
+    "success_rate": 94.5,
+    "avg_duration_secs": 312.5,
+    "by_status": {"Completed": 1432, "Failed": 91}
+  },
+  "findings": {
+    "total": 8945,
+    "by_severity": {"Critical": 23, "High": 187},
+    "verified_rate": 90.0
+  },
+  "system": {
+    "sse_connections": 15,
+    "uptime_secs": 864000,
+    "database_healthy": true
+  }
+}
+```
+
+📖 **Full documentation:** [`docs/METRICS_ENDPOINT.md`](docs/METRICS_ENDPOINT.md)
+
