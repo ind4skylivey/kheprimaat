@@ -1,0 +1,39 @@
+# Rust build artifacts
+target/
+Cargo.lock
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in container)
+docs/
+*.md
+!README.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local data
+data/
+logs/
+*.db
+*.db-*
+
+# Test files
+tests/
+fixtures/
+
+# CI/CD
+.github/
+
+# Environment files (secrets should not be in image)
+.env
+.env.*

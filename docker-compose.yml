@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  kheprimaat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kheprimaat
+    image: kheprimaat:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persistent database
+      - ./data:/data
+      # Custom configurations (optional)
+      - ./templates:/app/templates
+      # Logs (optional)
+      - ./logs:/app/logs
+    environment:
+      # Database
+      - DATABASE_PATH=/data/kheprimaat.db
+      
+      # Control API
+      - CONTROL_API_HOST=0.0.0.0
+      - CONTROL_API_PORT=3000
+      
+      # Logging
+      - RUST_LOG=info
+      
+      # Optional: SMTP (uncomment to enable)
+      # - SMTP_HOST=smtp.gmail.com
+      # - SMTP_PORT=587
+      # - SMTP_USERNAME=your-email@gmail.com
+      # - SMTP_PASSWORD=your-app-password
+      
+      # Optional: Slack (uncomment to enable)
+      # - SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+      
+      # Optional: Discord (uncomment to enable)
+      # - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR/WEBHOOK
+      
+      # Optional: Generic Webhook (uncomment to enable)
+      # - WEBHOOK_URL=https://your-endpoint.com/webhook
+    restart: unless-stopped
+    networks:
+      - kheprimaat-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  kheprimaat-network:
+    driver: bridge
+
+volumes:
+  data:
+    driver: local

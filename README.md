@@ -229,3 +229,36 @@ curl http://localhost:3000/metrics | jq
 
 📖 **Full documentation:** [`docs/METRICS_ENDPOINT.md`](docs/METRICS_ENDPOINT.md)
 
+
+## 🐳 Docker Deployment (NEW!)
+
+KhepriMaat now ships with Docker support for easy deployment!
+
+**Quick Start:**
+```bash
+# Clone and start
+git clone https://github.com/ind4skylivey/kheprimaat.git
+cd kheprimaat
+docker-compose up -d
+
+# Access API
+curl http://localhost:3000/metrics
+```
+
+**Features:**
+- 🚀 One-command deployment
+- 📦 All tools pre-installed (subfinder, nuclei, httpx, ffuf, sqlmap)
+- 💾 Persistent database
+- 🔧 Environment-based configuration
+- 🏥 Health checks included
+- 🔒 Non-root user for security
+- 📏 Optimized image (~300MB)
+
+**What's included:**
+- Multi-stage Dockerfile
+- docker-compose.yml with volumes
+- Health checks
+- Environment variable support
+- .dockerignore for optimal builds
+
+📖 **Full Docker guide:** [`DOCKER.md`](DOCKER.md)
