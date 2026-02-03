@@ -5,6 +5,7 @@ pub mod filters;
 pub mod metrics;
 pub mod models;
 pub mod notifications;
+pub mod oauth;         // Issue #3: SMTP OAuth2 helper
 pub mod orchestrator;
 pub mod priority_queue; // Issue #10: Priority Queue support
 pub mod queue;

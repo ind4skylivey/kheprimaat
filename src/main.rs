@@ -111,6 +111,11 @@ enum Commands {
     ConfigDiscord { url: String },
     /// Create a named config from file
     ConfigCreate { name: String, from_file: PathBuf },
+    /// Issue #3: OAuth2 setup for email providers
+    Oauth {
+        #[command(subcommand)]
+        command: OauthCommands,
+    },
     /// Initialize database schema
     DbInit,
     /// Run control API server only
@@ -119,6 +124,24 @@ enum Commands {
         bind: String,
         #[arg(long)]
         token: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum OauthCommands {
+    /// Setup OAuth2 for a provider (gmail, outlook, office365)
+    Setup {
+        /// Provider name
+        #[arg(value_enum)]
+        provider: String,
+    },
+    /// Show OAuth2 status for all providers
+    Status,
+    /// Refresh OAuth2 token for a provider
+    Refresh {
+        /// Provider name
+        #[arg(value_enum)]
+        provider: String,
     },
 }
 
@@ -410,6 +433,75 @@ async fn main() -> Result<()> {
             });
             // keep running until killed
             futures::future::pending::<()>().await;
+        }
+        Commands::Oauth { command } => {
+            use kheprimaat::oauth::{OAuthHelper, OAuthProvider, TokenStorage};
+            
+            match command {
+                OauthCommands::Setup { provider } => {
+                    let provider: OAuthProvider = provider.parse()
+                        .map_err(|e| anyhow::anyhow!("Invalid provider: {}", e))?;
+                    
+                    println!("🔐 Setting up OAuth2 for {:?}", provider);
+                    println!("Make sure you have set the following environment variables:");
+                    println!("  - {}", provider.client_id_env());
+                    println!("  - {}", provider.client_secret_env());
+                    println!();
+                    
+                    let helper = OAuthHelper::from_env(provider)?;
+                    let credentials = helper.start_flow().await?;
+                    
+                    TokenStorage::save_credentials(&credentials)?;
+                    println!("✅ OAuth2 setup completed successfully!");
+                    println!("Credentials saved securely.");
+                }
+                OauthCommands::Status => {
+                    let providers = vec![OAuthProvider::Gmail, OAuthProvider::Outlook, OAuthProvider::Office365];
+                    
+                    println!("🔐 OAuth2 Status");
+                    println!("================");
+                    
+                    for provider in providers {
+                        let status = if TokenStorage::credentials_exist(provider) {
+                            match TokenStorage::load_credentials(provider) {
+                                Ok(creds) => {
+                                    if creds.is_expired() {
+                                        "❌ Expired"
+                                    } else if creds.needs_refresh() {
+                                        "⚠️  Needs refresh"
+                                    } else {
+                                        "✅ Active"
+                                    }
+                                }
+                                Err(_) => "❌ Invalid",
+                            }
+                        } else {
+                            "❌ Not configured"
+                        };
+                        
+                        println!("{:?}: {}", provider, status);
+                    }
+                }
+                OauthCommands::Refresh { provider } => {
+                    let provider: OAuthProvider = provider.parse()
+                        .map_err(|e| anyhow::anyhow!("Invalid provider: {}", e))?;
+                    
+                    let mut credentials = TokenStorage::load_credentials(provider)?;
+                    
+                    if !credentials.needs_refresh() {
+                        println!("Token is still valid, no refresh needed.");
+                        return Ok(());
+                    }
+                    
+                    println!("🔄 Refreshing token for {:?}...", provider);
+                    
+                    let helper = OAuthHelper::from_env(provider)?;
+                    credentials = helper.refresh_token(&credentials.refresh_token).await?;
+                    
+                    TokenStorage::save_credentials(&credentials)?;
+                    println!("✅ Token refreshed successfully!");
+                }
+            }
         }
     }
 
