@@ -13,7 +13,7 @@ use crate::{
     notifications::NotificationManager,
     reporting::ReportGenerator,
     tools::ToolsManager,
-    queue::{EventBus, ScanEvent},
+    queue::{ReplayEventBus, ScanEvent},
 };
 
 #[derive(Clone)]
@@ -26,7 +26,7 @@ pub struct BugHunterOrchestrator {
     pub reporter: ReportGenerator,
     pub cancel_token: CancellationToken,
     forced_scan_id: Option<Uuid>,
-    event_bus: Option<EventBus>,
+    event_bus: Option<ReplayEventBus>,
 }
 
 impl BugHunterOrchestrator {
@@ -61,7 +61,7 @@ impl BugHunterOrchestrator {
         s
     }
 
-    pub fn with_event_bus(mut self, event_bus: EventBus) -> Self {
+    pub fn with_event_bus(mut self, event_bus: ReplayEventBus) -> Self {
         self.event_bus = Some(event_bus);
         self
     }

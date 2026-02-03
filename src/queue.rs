@@ -285,11 +285,273 @@ impl Default for EventBus {
     }
 }
 
+/// Event history buffer for SSE replay (Issue #8)
+#[derive(Clone)]
+pub struct EventHistory {
+    events: Arc<RwLock<std::collections::VecDeque<(Uuid, ScanEvent)>>>, // (event_id, event)
+    max_size: usize,
+}
+
+impl EventHistory {
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            events: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(max_size))),
+            max_size,
+        }
+    }
+
+    /// Add event to history buffer
+    pub async fn add_event(&self, event: ScanEvent) -> Uuid {
+        let event_id = Uuid::new_v4();
+        let mut events = self.events.write().await;
+        
+        // Remove oldest if at capacity
+        if events.len() >= self.max_size {
+            events.pop_front();
+        }
+        
+        events.push_back((event_id, event));
+        event_id
+    }
+
+    /// Get events since a specific event_id
+    pub async fn get_events_since(&self, since_id: Uuid) -> Vec<ScanEvent> {
+        let events = self.events.read().await;
+        let mut found = false;
+        let mut result = Vec::new();
+
+        for (id, event) in events.iter() {
+            if found {
+                result.push(event.clone());
+            } else if *id == since_id {
+                found = true;
+            }
+        }
+
+        result
+    }
+
+    /// Get events for a specific scan since a timestamp
+    pub async fn get_events_for_scan_since(&self, scan_id: Uuid, since: DateTime<Utc>) -> Vec<ScanEvent> {
+        let events = self.events.read().await;
+        events
+            .iter()
+            .filter(|(_, event)| {
+                event.scan_id() == scan_id && self.get_event_timestamp(event) >= since
+            })
+            .map(|(_, event)| event.clone())
+            .collect()
+    }
+
+    /// Get last N events for a scan
+    pub async fn get_last_events_for_scan(&self, scan_id: Uuid, count: usize) -> Vec<ScanEvent> {
+        let events = self.events.read().await;
+        events
+            .iter()
+            .filter(|(_, event)| event.scan_id() == scan_id)
+            .rev()
+            .take(count)
+            .map(|(_, event)| event.clone())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    }
+
+    fn get_event_timestamp(&self, event: &ScanEvent) -> DateTime<Utc> {
+        match event {
+            ScanEvent::Queued { timestamp, .. } => *timestamp,
+            ScanEvent::Started { timestamp, .. } => *timestamp,
+            ScanEvent::StageChanged { timestamp, .. } => *timestamp,
+            ScanEvent::Progress { timestamp, .. } => *timestamp,
+            ScanEvent::FindingDiscovered { timestamp, .. } => *timestamp,
+            ScanEvent::Completed { timestamp, .. } => *timestamp,
+            ScanEvent::Failed { timestamp, .. } => *timestamp,
+            ScanEvent::Cancelled { timestamp, .. } => *timestamp,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        // This is a synchronous operation that might block, but it's used for metrics only
+        // In production, consider using try_read or making this async
+        0 // Placeholder - use async version in production
+    }
+}
+
+/// Extended EventBus with replay support (Issue #8)
+#[derive(Clone)]
+pub struct ReplayEventBus {
+    inner: EventBus,
+    history: EventHistory,
+}
+
+impl ReplayEventBus {
+    pub fn new(history_size: usize) -> Self {
+        Self {
+            inner: EventBus::new(),
+            history: EventHistory::new(history_size),
+        }
+    }
+
+    /// Publish an event and store in history
+    pub async fn publish(&self, event: ScanEvent) -> Uuid {
+        let event_id = self.history.add_event(event.clone()).await;
+        self.inner.publish(event).await;
+        event_id
+    }
+
+    /// Subscribe with optional replay from last_event_id
+    pub async fn subscribe_with_replay(
+        &self,
+        last_event_id: Option<Uuid>,
+    ) -> mpsc::UnboundedReceiver<ScanEvent> {
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        // Replay missed events if last_event_id provided
+        if let Some(since_id) = last_event_id {
+            let missed_events = self.history.get_events_since(since_id).await;
+            for event in missed_events {
+                if tx.send(event).is_err() {
+                    break;
+                }
+            }
+        }
+
+        // Add to regular subscribers
+        let connection_id = Uuid::new_v4();
+        let metadata = ConnectionMetadata {
+            connection_id,
+            filter_scan_id: None,
+            filter_scan_ids: None,
+            connected_at: Utc::now(),
+        };
+
+        {
+            let mut subs = self.inner.subscribers.write().await;
+            let mut conns = self.inner.connections.write().await;
+            subs.push(tx);
+            conns.push(metadata);
+        }
+
+        info!("SSE client {} connected (with replay)", connection_id);
+        rx
+    }
+
+    /// Subscribe filtered with optional replay
+    pub async fn subscribe_filtered_with_replay(
+        &self,
+        filter_scan_ids: Vec<Uuid>,
+        last_event_id: Option<Uuid>,
+    ) -> mpsc::UnboundedReceiver<ScanEvent> {
+        use std::collections::HashSet;
+        const MAX_SCAN_IDS: usize = 10;
+
+        let ids: HashSet<Uuid> = filter_scan_ids.into_iter().take(MAX_SCAN_IDS).collect();
+
+        if ids.is_empty() {
+            let (_, rx) = mpsc::unbounded_channel();
+            return rx;
+        }
+
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        // Replay missed events for these scans
+        if let Some(since_id) = last_event_id {
+            let missed_events = self.history.get_events_since(since_id).await;
+            for event in missed_events {
+                if ids.contains(&event.scan_id()) {
+                    if tx.send(event).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Set up filtered subscription
+        let (filtered_tx, filtered_rx) = mpsc::unbounded_channel();
+        let (inner_tx, mut inner_rx) = (tx, rx);
+        let connection_id = Uuid::new_v4();
+        let metadata = ConnectionMetadata {
+            connection_id,
+            filter_scan_id: ids.iter().next().copied(),
+            filter_scan_ids: Some(ids.clone()),
+            connected_at: Utc::now(),
+        };
+
+        {
+            let mut subs = self.inner.subscribers.write().await;
+            let mut conns = self.inner.connections.write().await;
+            subs.push(inner_tx);
+            conns.push(metadata);
+        }
+
+        info!(
+            "SSE client {} connected (filtered with replay: {} scan IDs)",
+            connection_id,
+            ids.len()
+        );
+
+        // Filter future events
+        let event_bus = self.clone();
+        tokio::spawn(async move {
+            while let Some(event) = inner_rx.recv().await {
+                if ids.contains(&event.scan_id()) {
+                    if filtered_tx.send(event).is_err() {
+                        event_bus.inner.cleanup_connection(connection_id).await;
+                        break;
+                    }
+                }
+            }
+        });
+
+        filtered_rx
+    }
+
+    pub fn event_bus(&self) -> EventBus {
+        self.inner.clone()
+    }
+
+    /// Subscribe without replay (backward compatibility)
+    pub async fn subscribe(&self) -> mpsc::UnboundedReceiver<ScanEvent> {
+        self.subscribe_with_replay(None).await
+    }
+
+    /// Subscribe filtered without replay (backward compatibility)
+    pub async fn subscribe_filtered(&self, filter_scan_id: Uuid) -> mpsc::UnboundedReceiver<ScanEvent> {
+        self.subscribe_filtered_with_replay(vec![filter_scan_id], None).await
+    }
+
+    /// Subscribe filtered multiple without replay (backward compatibility)
+    pub async fn subscribe_filtered_multiple(&self, filter_scan_ids: Vec<Uuid>) -> mpsc::UnboundedReceiver<ScanEvent> {
+        self.subscribe_filtered_with_replay(filter_scan_ids, None).await
+    }
+
+    /// Get subscriber count from inner event bus
+    pub async fn subscriber_count(&self) -> usize {
+        self.inner.subscriber_count().await
+    }
+
+    /// Get filtered connection count from inner event bus
+    pub async fn filtered_connection_count(&self) -> usize {
+        self.inner.filtered_connection_count().await
+    }
+
+    /// Get unfiltered connection count from inner event bus
+    pub async fn unfiltered_connection_count(&self) -> usize {
+        self.inner.unfiltered_connection_count().await
+    }
+
+    /// Get connection metadata from inner event bus
+    pub async fn get_connections(&self) -> Vec<ConnectionMetadata> {
+        self.inner.get_connections().await
+    }
+}
+
 /// Scan job queue with bounded capacity
 pub struct ScanQueue {
     tx: mpsc::Sender<ScanJob>,
     rx: Arc<tokio::sync::Mutex<mpsc::Receiver<ScanJob>>>,
-    event_bus: EventBus,
+    event_bus: ReplayEventBus,
 }
 
 impl ScanQueue {
@@ -298,7 +560,17 @@ impl ScanQueue {
         Self {
             tx,
             rx: Arc::new(tokio::sync::Mutex::new(rx)),
-            event_bus: EventBus::new(),
+            event_bus: ReplayEventBus::new(1000), // Default: keep last 1000 events
+        }
+    }
+
+    /// Create with custom event history size
+    pub fn with_history_size(capacity: usize, history_size: usize) -> Self {
+        let (tx, rx) = mpsc::channel(capacity);
+        Self {
+            tx,
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+            event_bus: ReplayEventBus::new(history_size),
         }
     }
 
@@ -329,8 +601,13 @@ impl ScanQueue {
     }
 
     /// Get a reference to the event bus
-    pub fn event_bus(&self) -> EventBus {
+    pub fn event_bus(&self) -> ReplayEventBus {
         self.event_bus.clone()
+    }
+
+    /// Get event history for a specific scan
+    pub async fn get_event_history(&self, scan_id: Uuid, count: usize) -> Vec<ScanEvent> {
+        self.event_bus.history.get_last_events_for_scan(scan_id, count).await
     }
 
     /// Get current queue length (approximate)
@@ -349,13 +626,13 @@ impl ScanQueue {
 pub struct Worker {
     id: usize,
     db: Arc<Database>,
-    event_bus: EventBus,
+    event_bus: ReplayEventBus,
     shutdown: CancellationToken,
     retry_queue: Arc<tokio::sync::Mutex<Vec<ScanJob>>>,
 }
 
 impl Worker {
-    pub fn new(id: usize, db: Arc<Database>, event_bus: EventBus, shutdown: CancellationToken) -> Self {
+    pub fn new(id: usize, db: Arc<Database>, event_bus: ReplayEventBus, shutdown: CancellationToken) -> Self {
         Self {
             id,
             db,
@@ -1047,5 +1324,220 @@ mod tests {
         
         // Cleanup should have occurred
         assert_eq!(bus.filtered_connection_count().await, 0);
+    }
+
+    // Issue #8: Event Replay Tests
+    #[tokio::test]
+    async fn test_event_history_add_and_retrieve() {
+        let history = EventHistory::new(10);
+        let scan_id = Uuid::new_v4();
+        
+        let event = ScanEvent::Queued {
+            scan_id,
+            target: "test.com".to_string(),
+            timestamp: Utc::now(),
+        };
+        
+        let event_id = history.add_event(event.clone()).await;
+        
+        // Retrieve events since the event_id (should be empty since we start after)
+        let events_since = history.get_events_since(event_id).await;
+        assert!(events_since.is_empty());
+        
+        // Add another event
+        let event2 = ScanEvent::Started {
+            scan_id,
+            target: "test.com".to_string(),
+            worker_id: 1,
+            timestamp: Utc::now(),
+        };
+        let _event2_id = history.add_event(event2.clone()).await;
+        
+        // Now get events since first event_id
+        let events_since = history.get_events_since(event_id).await;
+        assert_eq!(events_since.len(), 1);
+        assert_eq!(events_since[0].scan_id(), scan_id);
+    }
+
+    #[tokio::test]
+    async fn test_event_history_buffer_limit() {
+        let history = EventHistory::new(3);
+        let scan_id = Uuid::new_v4();
+        
+        // Add 5 events (buffer only holds 3)
+        for i in 0..5 {
+            let event = ScanEvent::Progress {
+                scan_id,
+                stage: format!("stage{}", i),
+                current: i,
+                total: 5,
+                timestamp: Utc::now(),
+            };
+            history.add_event(event).await;
+        }
+        
+        // Get last events - should only get 3
+        let events = history.get_last_events_for_scan(scan_id, 10).await;
+        assert_eq!(events.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_replay_event_bus_basic() {
+        let bus = ReplayEventBus::new(100);
+        let scan_id = Uuid::new_v4();
+        
+        // Publish some events
+        let event1 = ScanEvent::Queued {
+            scan_id,
+            target: "test.com".to_string(),
+            timestamp: Utc::now(),
+        };
+        let event_id1 = bus.publish(event1).await;
+        
+        let event2 = ScanEvent::Started {
+            scan_id,
+            target: "test.com".to_string(),
+            worker_id: 1,
+            timestamp: Utc::now(),
+        };
+        let _event_id2 = bus.publish(event2).await;
+        
+        // Subscribe with replay from first event
+        let mut rx = bus.subscribe_with_replay(Some(event_id1)).await;
+        
+        // Should receive both events (the replayed one and the new one)
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        
+        let received1 = rx.recv().await;
+        assert!(received1.is_some());
+        
+        let received2 = rx.recv().await;
+        assert!(received2.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_replay_event_bus_filtered() {
+        let bus = ReplayEventBus::new(100);
+        let scan_id1 = Uuid::new_v4();
+        let scan_id2 = Uuid::new_v4();
+        
+        // Publish events for both scans
+        let event1 = ScanEvent::Queued {
+            scan_id: scan_id1,
+            target: "test1.com".to_string(),
+            timestamp: Utc::now(),
+        };
+        let event_id1 = bus.publish(event1.clone()).await;
+        
+        let event2 = ScanEvent::Queued {
+            scan_id: scan_id2,
+            target: "test2.com".to_string(),
+            timestamp: Utc::now(),
+        };
+        bus.publish(event2).await;
+        
+        let event3 = ScanEvent::Started {
+            scan_id: scan_id1,
+            target: "test1.com".to_string(),
+            worker_id: 1,
+            timestamp: Utc::now(),
+        };
+        bus.publish(event3.clone()).await;
+        
+        // Subscribe filtered to scan_id1 with replay
+        let mut rx = bus.subscribe_filtered_with_replay(vec![scan_id1], Some(event_id1)).await;
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        
+        // Should receive queued and started for scan_id1, but not scan_id2 events
+        let received1 = rx.recv().await;
+        assert!(received1.is_some());
+        assert_eq!(received1.unwrap().scan_id(), scan_id1);
+        
+        let received2 = rx.recv().await;
+        assert!(received2.is_some());
+        assert_eq!(received2.unwrap().scan_id(), scan_id1);
+        
+        // Should not receive scan_id2 event
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(100),
+            rx.recv()
+        ).await {
+            Err(_) => {}, // Expected timeout
+            Ok(Some(event)) => panic!("Should not receive event for scan_id2: {:?}", event),
+            Ok(None) => {},
+        }
+    }
+
+    #[tokio::test]
+    async fn test_replay_event_bus_backward_compatibility() {
+        let bus = ReplayEventBus::new(100);
+        let scan_id = Uuid::new_v4();
+        
+        // Test that old subscribe methods still work without replay
+        let mut rx = bus.subscribe().await;
+        
+        let event = ScanEvent::Queued {
+            scan_id,
+            target: "test.com".to_string(),
+            timestamp: Utc::now(),
+        };
+        bus.publish(event.clone()).await;
+        
+        let received = rx.recv().await;
+        assert!(received.is_some());
+        
+        // Test filtered subscribe
+        let mut rx_filtered = bus.subscribe_filtered(scan_id).await;
+        bus.publish(event).await;
+        
+        let received = rx_filtered.recv().await;
+        assert!(received.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_scan_queue_with_history() {
+        let queue = ScanQueue::new(10);
+        let scan_id = Uuid::new_v4();
+        
+        let job = ScanJob::new(
+            scan_id,
+            crate::models::Target::new("example.com".to_string(), vec![]),
+            crate::models::ScanConfig::default(),
+        );
+        
+        queue.enqueue(job).await.unwrap();
+        
+        // Get event history
+        let history = queue.get_event_history(scan_id, 10).await;
+        assert!(!history.is_empty());
+        
+        // Verify it's a queued event
+        match &history[0] {
+            ScanEvent::Queued { scan_id: id, .. } => {
+                assert_eq!(*id, scan_id);
+            }
+            _ => panic!("Expected Queued event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_replay_event_bus_metrics() {
+        let bus = ReplayEventBus::new(100);
+        
+        // Initially no subscribers
+        assert_eq!(bus.subscriber_count().await, 0);
+        assert_eq!(bus.filtered_connection_count().await, 0);
+        
+        // Add subscriber
+        let _rx = bus.subscribe().await;
+        assert_eq!(bus.subscriber_count().await, 1);
+        assert_eq!(bus.unfiltered_connection_count().await, 1);
+        
+        // Add filtered subscriber
+        let scan_id = Uuid::new_v4();
+        let _rx_filtered = bus.subscribe_filtered(scan_id).await;
+        assert_eq!(bus.subscriber_count().await, 2);
+        assert_eq!(bus.filtered_connection_count().await, 1);
     }
 }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::{database::Database, models::ScanStatus, queue::EventBus};
+use crate::{database::Database, models::ScanStatus, queue::ReplayEventBus};
 
 /// System metrics aggregating scan, finding, and health data
 #[derive(Debug, Clone, Serialize)]
@@ -53,7 +53,7 @@ pub struct SystemHealth {
 /// Metrics collector with caching
 pub struct MetricsCollector {
     db: Arc<Database>,
-    event_bus: EventBus,
+    event_bus: ReplayEventBus,
     cache: Arc<RwLock<Option<CachedMetrics>>>,
     cache_ttl_secs: u64,
     start_time: DateTime<Utc>,
@@ -66,7 +66,7 @@ struct CachedMetrics {
 }
 
 impl MetricsCollector {
-    pub fn new(db: Arc<Database>, event_bus: EventBus) -> Self {
+    pub fn new(db: Arc<Database>, event_bus: ReplayEventBus) -> Self {
         Self {
             db,
             event_bus,
@@ -350,7 +350,7 @@ mod tests {
     #[tokio::test]
     async fn test_cache_age_tracking() {
         let db = Arc::new(Database::new("sqlite::memory:").await.unwrap());
-        let event_bus = crate::queue::EventBus::new();
+        let event_bus = crate::queue::ReplayEventBus::new(100);
         let collector = MetricsCollector::new(db, event_bus);
 
         // Initially no cache

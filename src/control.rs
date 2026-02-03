@@ -216,6 +216,9 @@ struct EventsQuery {
     /// Comma-separated list of scan IDs (Issue #9)
     /// Example: ?scan_id=uuid1,uuid2,uuid3
     scan_id: Option<String>,
+    /// Last event ID for replay (Issue #8)
+    /// Example: ?last_event_id=uuid
+    last_event_id: Option<String>,
 }
 
 /// Parse comma-separated scan IDs with security limits
@@ -252,43 +255,87 @@ fn parse_scan_ids(input: &str) -> Result<Vec<Uuid>, String> {
 async fn stream_events(
     State(app): State<AppState>,
     Query(params): Query<EventsQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Sse<impl futures::Stream<Item = Result<Event, std::convert::Infallible>>> {
     use tokio_stream::wrappers::UnboundedReceiverStream;
     use tokio_stream::StreamExt;
-    
-    // Subscribe to the event bus (filtered or unfiltered)
+    use axum::response::sse::Event;
+
+    // Parse Last-Event-ID header or query param for replay (Issue #8)
+    let last_event_id = params
+        .last_event_id
+        .and_then(|s| Uuid::parse_str(&s).ok())
+        .or_else(|| {
+            headers
+                .get("Last-Event-ID")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| Uuid::parse_str(s).ok())
+        });
+
+    // Subscribe to the event bus with optional replay
     let rx = if let Some(scan_id_str) = params.scan_id {
         // Issue #9: Support multiple comma-separated scan IDs
         match parse_scan_ids(&scan_id_str) {
             Ok(scan_ids) if scan_ids.len() == 1 => {
-                // Single scan ID - use original method for backward compatibility
-                app.queue.event_bus().subscribe_filtered(scan_ids[0]).await
+                // Single scan ID with replay support
+                if let Some(event_id) = last_event_id {
+                    app.queue
+                        .event_bus()
+                        .subscribe_filtered_with_replay(vec![scan_ids[0]], Some(event_id))
+                        .await
+                } else {
+                    app.queue.event_bus().subscribe_filtered(scan_ids[0]).await
+                }
             }
             Ok(scan_ids) => {
-                // Multiple scan IDs
-                app.queue.event_bus().subscribe_filtered_multiple(scan_ids).await
+                // Multiple scan IDs with replay support
+                if let Some(event_id) = last_event_id {
+                    app.queue
+                        .event_bus()
+                        .subscribe_filtered_with_replay(scan_ids, Some(event_id))
+                        .await
+                } else {
+                    app.queue
+                        .event_bus()
+                        .subscribe_filtered_multiple(scan_ids)
+                        .await
+                }
             }
             Err(_) => {
-                // Invalid scan_id format, subscribe to all events
-                app.queue.event_bus().subscribe().await
+                // Invalid scan_id format, subscribe to all events with replay
+                if let Some(event_id) = last_event_id {
+                    app.queue
+                        .event_bus()
+                        .subscribe_with_replay(Some(event_id))
+                        .await
+                } else {
+                    app.queue.event_bus().subscribe().await
+                }
             }
         }
     } else {
-        // No filter, subscribe to all events
-        app.queue.event_bus().subscribe().await
+        // No filter, subscribe to all events with replay support
+        if let Some(event_id) = last_event_id {
+            app.queue
+                .event_bus()
+                .subscribe_with_replay(Some(event_id))
+                .await
+        } else {
+            app.queue.event_bus().subscribe().await
+        }
     };
-    
+
     let stream = UnboundedReceiverStream::new(rx)
         .map(|event| {
             let json_data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
             Event::default().data(json_data)
         })
         .map(Ok);
-    
+
     Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()
             .interval(std::time::Duration::from_secs(30))
-            .text("keepalive")
+            .text("keepalive"),
     )
 }
 
