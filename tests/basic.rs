@@ -83,8 +83,9 @@ fn report_includes_banner() {
     use kheprimaat::models::{ScanResult, ScanStatus};
     use kheprimaat::reporting::ReportGenerator;
     use tempfile::NamedTempFile;
+    let scan_id = Uuid::new_v4();
     let scan = ScanResult {
-        id: Uuid::new_v4(),
+        id: scan_id,
         target_id: Uuid::new_v4(),
         config_id: Uuid::new_v4(),
         findings: vec![],
@@ -97,6 +98,7 @@ fn report_includes_banner() {
         request_body: None,
         response_body: None,
         response_headers: None,
+        timeline: Some(kheprimaat::models::ScanTimeline::new(scan_id)),
     };
     let gen = ReportGenerator::new();
     let tmp = NamedTempFile::new().unwrap();

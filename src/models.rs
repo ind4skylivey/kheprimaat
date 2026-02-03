@@ -338,6 +338,7 @@ pub struct ScanResult {
     pub request_body: Option<String>,
     pub response_body: Option<String>,
     pub response_headers: Option<String>,
+    pub timeline: Option<ScanTimeline>, // Issue #1: Timeline visualization
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -352,8 +353,9 @@ pub struct ScanSummary {
 
 impl ScanResult {
     pub fn new(target_id: Uuid, config_id: Uuid) -> Self {
+        let id = Uuid::new_v4();
         Self {
-            id: Uuid::new_v4(),
+            id,
             target_id,
             config_id,
             findings: vec![],
@@ -366,23 +368,34 @@ impl ScanResult {
             request_body: None,
             response_body: None,
             response_headers: None,
+            timeline: Some(ScanTimeline::new(id)), // Issue #1: Initialize timeline
         }
     }
 
     pub fn add_finding(&mut self, finding: Finding) {
+        // Issue #1: Add finding to timeline
+        if let Some(ref mut timeline) = self.timeline {
+            timeline.add_finding_event(&finding);
+        }
         self.findings.push(finding);
     }
 
     pub fn complete(mut self) -> Self {
         self.ended_at = Some(Utc::now());
         self.status = ScanStatus::Completed;
+        if let Some(ref mut timeline) = self.timeline {
+            timeline.mark_completed();
+        }
         self
     }
 
     pub fn fail(mut self, error: String) -> Self {
         self.ended_at = Some(Utc::now());
         self.status = ScanStatus::Failed;
-        self.error_message = Some(error);
+        self.error_message = Some(error.clone());
+        if let Some(ref mut timeline) = self.timeline {
+            timeline.mark_failed(error);
+        }
         self
     }
 
@@ -501,5 +514,140 @@ impl ScanStatistics {
             verification_rate,
             average_scan_duration_secs,
         }
+    }
+}
+
+/// Timeline event for scan visualization (Issue #1)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineEvent {
+    pub timestamp: DateTime<Utc>,
+    pub event_type: TimelineEventType,
+    pub stage: Option<String>,
+    pub description: String,
+    pub duration_ms: Option<u64>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Types of timeline events
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimelineEventType {
+    ScanStarted,
+    StageStarted,
+    StageCompleted,
+    ToolStarted,
+    ToolCompleted,
+    FindingDiscovered,
+    ScanCompleted,
+    ScanFailed,
+    ScanCancelled,
+}
+
+/// Scan timeline for visualization (Issue #1)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScanTimeline {
+    pub events: Vec<TimelineEvent>,
+    pub scan_id: Uuid,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl ScanTimeline {
+    pub fn new(scan_id: Uuid) -> Self {
+        Self {
+            events: Vec::new(),
+            scan_id,
+            started_at: Utc::now(),
+            completed_at: None,
+        }
+    }
+
+    pub fn add_event(
+        &mut self,
+        event_type: TimelineEventType,
+        stage: Option<String>,
+        description: String,
+        duration_ms: Option<u64>,
+    ) {
+        self.events.push(TimelineEvent {
+            timestamp: Utc::now(),
+            event_type,
+            stage,
+            description,
+            duration_ms,
+            metadata: None,
+        });
+    }
+
+    pub fn add_finding_event(&mut self, finding: &Finding) {
+        self.events.push(TimelineEvent {
+            timestamp: Utc::now(),
+            event_type: TimelineEventType::FindingDiscovered,
+            stage: None,
+            description: format!(
+                "[{}] {} - {}",
+                finding.severity, finding.vulnerability_type, finding.endpoint
+            ),
+            duration_ms: None,
+            metadata: Some(serde_json::json!({
+                "severity": finding.severity,
+                "vuln_type": finding.vulnerability_type,
+                "endpoint": finding.endpoint,
+            })),
+        });
+    }
+
+    pub fn mark_completed(&mut self) {
+        self.completed_at = Some(Utc::now());
+        self.add_event(
+            TimelineEventType::ScanCompleted,
+            None,
+            "Scan completed successfully".to_string(),
+            Some(self.total_duration_ms()),
+        );
+    }
+
+    pub fn mark_failed(&mut self, error: String) {
+        self.completed_at = Some(Utc::now());
+        self.add_event(
+            TimelineEventType::ScanFailed,
+            None,
+            format!("Scan failed: {}", error),
+            Some(self.total_duration_ms()),
+        );
+    }
+
+    pub fn total_duration_ms(&self) -> u64 {
+        let end = self.completed_at.unwrap_or_else(Utc::now);
+        (end - self.started_at).num_milliseconds() as u64
+    }
+
+    pub fn get_stage_durations(&self) -> Vec<(String, u64)> {
+        let mut durations = Vec::new();
+        let mut current_stage: Option<(String, DateTime<Utc>)> = None;
+
+        for event in &self.events {
+            match &event.event_type {
+                TimelineEventType::StageStarted => {
+                    if let Some(stage) = &event.stage {
+                        current_stage = Some((stage.clone(), event.timestamp));
+                    }
+                }
+                TimelineEventType::StageCompleted => {
+                    if let Some((stage_name, start_time)) = current_stage.take() {
+                        let duration = (event.timestamp - start_time).num_milliseconds() as u64;
+                        durations.push((stage_name, duration));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        durations
+    }
+
+    /// Generate HTML timeline data for reports
+    pub fn to_html_data(&self) -> String {
+        serde_json::to_string(&self.events).unwrap_or_default()
     }
 }

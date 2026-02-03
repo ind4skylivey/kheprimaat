@@ -362,8 +362,9 @@ impl Database {
 
         let mut scans = Vec::new();
         for row in rows {
+            let scan_id = Uuid::parse_str(row.try_get::<String, _>("id")?.as_str())?;
             scans.push(ScanResult {
-                id: Uuid::parse_str(row.try_get::<String, _>("id")?.as_str())?,
+                id: scan_id,
                 target_id: Uuid::parse_str(row.try_get::<String, _>("target_id")?.as_str())?,
                 config_id: Uuid::parse_str(row.try_get::<String, _>("config_id")?.as_str())?,
                 findings: Vec::new(),
@@ -382,6 +383,7 @@ impl Database {
                 request_body: row.try_get("request_body")?,
                 response_body: row.try_get("response_body")?,
                 response_headers: row.try_get("response_headers")?,
+                timeline: Some(crate::models::ScanTimeline::new(scan_id)),
             });
         }
         Ok(scans)
@@ -489,6 +491,7 @@ impl Database {
             request_body: row.try_get("request_body")?,
             response_body: row.try_get("response_body")?,
             response_headers: row.try_get("response_headers")?,
+            timeline: Some(crate::models::ScanTimeline::new(*scan_id)),
         };
 
         for fr in findings_rows {

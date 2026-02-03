@@ -27,6 +27,7 @@ async fn cancellation_flag_changes_status() {
         request_body: None,
         response_body: None,
         response_headers: None,
+        timeline: Some(kheprimaat::models::ScanTimeline::new(scan_id)),
     };
     db.save_scan(&scan).await.unwrap();
     db.set_scan_cancel(&scan_id).await.unwrap();

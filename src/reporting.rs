@@ -26,7 +26,7 @@ impl ReportGenerator {
         let mut hb = Handlebars::new();
         hb.register_template_string("report", TEMPLATE)
             .expect("template compiles");
-        Self { 
+        Self {
             hb,
             redactor: SecretRedactor::new(),
         }
@@ -71,7 +71,10 @@ impl ReportGenerator {
                 f.severity.to_string(),
                 f.vulnerability_type.to_string(),
                 f.endpoint.clone(),
-                f.payload.as_ref().map(|p| self.redactor.redact(p)).unwrap_or_default(),
+                f.payload
+                    .as_ref()
+                    .map(|p| self.redactor.redact(p))
+                    .unwrap_or_default(),
                 self.redactor.redact(&f.evidence),
                 f.tool_source.clone(),
                 f.confidence_score
@@ -92,8 +95,14 @@ impl ReportGenerator {
     fn redact_scan(&self, scan: &ScanResult) -> ScanResult {
         let mut clone = scan.clone();
         clone.request_body = clone.request_body.as_ref().map(|b| self.redactor.redact(b));
-        clone.response_body = clone.response_body.as_ref().map(|b| self.redactor.redact(b));
-        clone.response_headers = clone.response_headers.as_ref().map(|b| self.redactor.redact(b));
+        clone.response_body = clone
+            .response_body
+            .as_ref()
+            .map(|b| self.redactor.redact(b));
+        clone.response_headers = clone
+            .response_headers
+            .as_ref()
+            .map(|b| self.redactor.redact(b));
         for f in clone.findings.iter_mut() {
             f.evidence = self.redactor.redact(&f.evidence);
             f.payload = f.payload.as_ref().map(|p| self.redactor.redact(p));
@@ -170,8 +179,14 @@ impl<'a> ReportContext<'a> {
                 tool_source: f.tool_source.clone(),
                 confidence_score: f.confidence_score,
                 verified: f.verified,
-                request_body: f.request_body.as_ref().map(|s| truncate_blob(&redactor.redact(s))),
-                response_body: f.response_body.as_ref().map(|s| truncate_blob(&redactor.redact(s))),
+                request_body: f
+                    .request_body
+                    .as_ref()
+                    .map(|s| truncate_blob(&redactor.redact(s))),
+                response_body: f
+                    .response_body
+                    .as_ref()
+                    .map(|s| truncate_blob(&redactor.redact(s))),
                 response_headers: f
                     .response_headers
                     .as_ref()
@@ -267,6 +282,27 @@ const TEMPLATE: &str = r#"
   {{#if response_body}}
   <h3>Response Body (truncated)</h3>
   <pre>{{response_body}}</pre>
+  {{/if}}
+
+  {{#if scan.timeline}}
+  <h2>Scan Timeline</h2>
+  <div id="timeline" style="margin: 20px 0; padding: 16px; background: #1f2937; border-radius: 8px;">
+    <div style="margin-bottom: 12px; font-weight: bold;">Scan Duration: {{scan.timeline.total_duration_ms}}ms</div>
+    <div class="timeline-container" style="position: relative; padding-left: 20px;">
+      {{#each scan.timeline.events}}
+      <div class="timeline-item" style="position: relative; margin-bottom: 16px; padding-left: 24px; border-left: 2px solid #c084fc;">
+        <div class="timeline-dot" style="position: absolute; left: -9px; top: 4px; width: 16px; height: 16px; background: #c084fc; border-radius: 50%;"></div>
+        <div class="timeline-content">
+          <div style="font-size: 0.85em; color: #94a3b8;">{{timestamp}}</div>
+          <div style="font-weight: bold; color: #e2e8f0;">{{event_type}}</div>
+          {{#if stage}}<div style="color: #22d3ee;">Stage: {{stage}}</div>{{/if}}
+          <div style="color: #cbd5e1;">{{description}}</div>
+          {{#if duration_ms}}<div style="font-size: 0.8em; color: #a3e635;">Duration: {{duration_ms}}ms</div>{{/if}}
+        </div>
+      </div>
+      {{/each}}
+    </div>
+  </div>
   {{/if}}
 
   <h2>Findings</h2>
