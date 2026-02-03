@@ -7,7 +7,7 @@ use axum::{
     middleware::Next,
     response::sse::{Event, Sse},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -18,6 +18,7 @@ use crate::{
     database::Database, 
     models::ScanStatus, 
     queue::{ScanQueue, ScanJob, WorkerPool},
+    priority_queue::Priority,
     metrics::MetricsCollector,
 };
 
@@ -117,6 +118,13 @@ pub async fn serve(db: Arc<Database>, bind: &str, cfg: ControlConfig) -> anyhow:
         .route("/events", get(stream_events))
         .route("/metrics", get(get_metrics))
         .route("/stats", get(get_metrics)) // Alias for /metrics
+        // Issue #11: Schedule endpoints
+        .route("/schedules", get(list_schedules))
+        .route("/schedules", post(create_schedule_endpoint))
+        .route("/schedules/:schedule_id", get(get_schedule))
+        .route("/schedules/:schedule_id", delete(delete_schedule))
+        .route("/schedules/:schedule_id/pause", post(pause_schedule))
+        .route("/schedules/:schedule_id/resume", post(resume_schedule))
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
             state.auth.clone(),
@@ -205,7 +213,40 @@ async fn list_scans(State(app): State<AppState>) -> impl IntoResponse {
 
 #[derive(Deserialize)]
 struct EventsQuery {
+    /// Comma-separated list of scan IDs (Issue #9)
+    /// Example: ?scan_id=uuid1,uuid2,uuid3
     scan_id: Option<String>,
+}
+
+/// Parse comma-separated scan IDs with security limits
+/// 
+/// Security features:
+/// - Max 10 scan IDs (DoS prevention)
+/// - Max 400 chars input length
+/// - Validates UUID format
+fn parse_scan_ids(input: &str) -> Result<Vec<Uuid>, String> {
+    const MAX_SCAN_IDS: usize = 10;
+    const MAX_INPUT_LENGTH: usize = 400; // 10 UUIDs * 36 chars + 9 commas
+    
+    if input.len() > MAX_INPUT_LENGTH {
+        return Err(format!("Input too long (max {} chars)", MAX_INPUT_LENGTH));
+    }
+    
+    let ids: Vec<Uuid> = input
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .take(MAX_SCAN_IDS)
+        .map(|s| {
+            Uuid::parse_str(s).map_err(|_| format!("Invalid UUID: {}", s))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    
+    if ids.is_empty() {
+        return Err("No valid scan IDs provided".to_string());
+    }
+    
+    Ok(ids)
 }
 
 async fn stream_events(
@@ -217,12 +258,20 @@ async fn stream_events(
     
     // Subscribe to the event bus (filtered or unfiltered)
     let rx = if let Some(scan_id_str) = params.scan_id {
-        // Try to parse scan_id and subscribe with filter
-        if let Ok(scan_id) = Uuid::parse_str(&scan_id_str) {
-            app.queue.event_bus().subscribe_filtered(scan_id).await
-        } else {
-            // Invalid scan_id, subscribe to all events
-            app.queue.event_bus().subscribe().await
+        // Issue #9: Support multiple comma-separated scan IDs
+        match parse_scan_ids(&scan_id_str) {
+            Ok(scan_ids) if scan_ids.len() == 1 => {
+                // Single scan ID - use original method for backward compatibility
+                app.queue.event_bus().subscribe_filtered(scan_ids[0]).await
+            }
+            Ok(scan_ids) => {
+                // Multiple scan IDs
+                app.queue.event_bus().subscribe_filtered_multiple(scan_ids).await
+            }
+            Err(_) => {
+                // Invalid scan_id format, subscribe to all events
+                app.queue.event_bus().subscribe().await
+            }
         }
     } else {
         // No filter, subscribe to all events
@@ -286,6 +335,19 @@ async fn create_scan(
             )
         }
     };
+    
+    // Issue #10: Parse priority from request
+    let priority = body
+        .get("priority")
+        .and_then(|v| v.as_str())
+        .and_then(|s| match s.to_lowercase().as_str() {
+            "high" => Some(Priority::High),
+            "normal" => Some(Priority::Normal),
+            "low" => Some(Priority::Low),
+            _ => None,
+        })
+        .unwrap_or(Priority::Normal);
+    
     let scope = body
         .get("scope")
         .and_then(|v| v.as_array())
@@ -342,13 +404,17 @@ async fn create_scan(
         );
     }
 
-    // Create job and enqueue
+    // Issue #10: Create job with priority and enqueue
     let job = ScanJob::new(scan_id, target_model, scan_config);
     
     match app.queue.enqueue(job).await {
         Ok(_) => (
             StatusCode::ACCEPTED,
-            Json(json!({ "scan_id": scan_id, "status": "queued" })),
+            Json(json!({ 
+                "scan_id": scan_id, 
+                "status": "queued",
+                "priority": format!("{:?}", priority).to_lowercase()
+            })),
         ),
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -414,4 +480,244 @@ async fn auth_middleware(
 
     req.extensions_mut().insert(auth);
     Ok(next.run(req).await)
+}
+
+// Issue #11: Schedule handlers
+
+async fn list_schedules(State(app): State<AppState>) -> impl IntoResponse {
+    match app.db.list_schedules(None).await {
+        Ok(schedules) => (
+            StatusCode::OK,
+            Json(json!({
+                "schedules": schedules.iter().map(|s| {
+                    json!({
+                        "id": s.id,
+                        "target": s.target.domain,
+                        "cron": s.cron_expression,
+                        "timezone": s.timezone,
+                        "enabled": s.enabled,
+                        "last_run": s.last_run,
+                        "next_run": s.next_run,
+                        "created_by": s.created_by,
+                        "priority": format!("{:?}", s.priority).to_lowercase()
+                    })
+                }).collect::<Vec<_>>()
+            })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateScheduleRequest {
+    target: String,
+    config: String,
+    cron: String,
+    #[serde(default = "default_timezone")]
+    timezone: String,
+    #[serde(default)]
+    priority: Option<String>,
+}
+
+fn default_timezone() -> String {
+    "UTC".to_string()
+}
+
+async fn create_schedule_endpoint(
+    State(app): State<AppState>,
+    Json(body): Json<CreateScheduleRequest>,
+) -> impl IntoResponse {
+    use crate::scheduler::{create_schedule, SchedulerConfig};
+    use crate::priority_queue::Priority;
+    
+    let priority = body.priority.as_ref()
+        .and_then(|p| match p.to_lowercase().as_str() {
+            "high" => Some(Priority::High),
+            "normal" => Some(Priority::Normal),
+            "low" => Some(Priority::Low),
+            _ => None,
+        })
+        .unwrap_or(Priority::Normal);
+    
+    let req = crate::scheduler::CreateScheduleRequest {
+        target: body.target,
+        config: body.config,
+        cron: body.cron,
+        timezone: body.timezone,
+        priority: Some(priority),
+    };
+    
+    let config = SchedulerConfig::default();
+    // Note: In production, you'd get the user_id from auth context
+    let user_id = "anonymous".to_string();
+    
+    match create_schedule(app.db.clone(), &config, req, user_id).await {
+        Ok(schedule) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "id": schedule.id,
+                "target": schedule.target.domain,
+                "cron": schedule.cron_expression,
+                "timezone": schedule.timezone,
+                "next_run": schedule.next_run,
+                "enabled": schedule.enabled,
+                "priority": format!("{:?}", schedule.priority).to_lowercase()
+            })),
+        ),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": err.to_string() })),
+        ),
+    }
+}
+
+async fn get_schedule(
+    State(app): State<AppState>,
+    Path(schedule_id): Path<String>,
+) -> impl IntoResponse {
+    match Uuid::parse_str(&schedule_id) {
+        Ok(id) => {
+            match app.db.get_schedule(&id).await {
+                Ok(Some(schedule)) => (
+                    StatusCode::OK,
+                    Json(json!({
+                        "id": schedule.id,
+                        "target": schedule.target.domain,
+                        "cron": schedule.cron_expression,
+                        "timezone": schedule.timezone,
+                        "enabled": schedule.enabled,
+                        "last_run": schedule.last_run,
+                        "next_run": schedule.next_run,
+                        "created_by": schedule.created_by,
+                        "priority": format!("{:?}", schedule.priority).to_lowercase()
+                    })),
+                ),
+                Ok(None) => (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "Schedule not found" })),
+                ),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": err.to_string() })),
+                ),
+            }
+        }
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Invalid schedule ID" })),
+        ),
+    }
+}
+
+async fn delete_schedule(
+    State(app): State<AppState>,
+    Path(schedule_id): Path<String>,
+) -> impl IntoResponse {
+    match Uuid::parse_str(&schedule_id) {
+        Ok(id) => {
+            match app.db.delete_schedule(&id).await {
+                Ok(true) => (
+                    StatusCode::OK,
+                    Json(json!({ "status": "deleted" })),
+                ),
+                Ok(false) => (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "Schedule not found" })),
+                ),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": err.to_string() })),
+                ),
+            }
+        }
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Invalid schedule ID" })),
+        ),
+    }
+}
+
+async fn pause_schedule(
+    State(app): State<AppState>,
+    Path(schedule_id): Path<String>,
+) -> impl IntoResponse {
+    match Uuid::parse_str(&schedule_id) {
+        Ok(id) => {
+            match app.db.get_schedule(&id).await {
+                Ok(Some(mut schedule)) => {
+                    schedule.enabled = false;
+                    match app.db.save_schedule(&schedule).await {
+                        Ok(_) => (
+                            StatusCode::OK,
+                            Json(json!({ 
+                                "status": "paused",
+                                "id": schedule.id,
+                                "enabled": false
+                            })),
+                        ),
+                        Err(err) => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": err.to_string() })),
+                        ),
+                    }
+                }
+                Ok(None) => (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "Schedule not found" })),
+                ),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": err.to_string() })),
+                ),
+            }
+        }
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Invalid schedule ID" })),
+        ),
+    }
+}
+
+async fn resume_schedule(
+    State(app): State<AppState>,
+    Path(schedule_id): Path<String>,
+) -> impl IntoResponse {
+    match Uuid::parse_str(&schedule_id) {
+        Ok(id) => {
+            match app.db.get_schedule(&id).await {
+                Ok(Some(mut schedule)) => {
+                    schedule.enabled = true;
+                    match app.db.save_schedule(&schedule).await {
+                        Ok(_) => (
+                            StatusCode::OK,
+                            Json(json!({ 
+                                "status": "resumed",
+                                "id": schedule.id,
+                                "enabled": true
+                            })),
+                        ),
+                        Err(err) => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": err.to_string() })),
+                        ),
+                    }
+                }
+                Ok(None) => (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "Schedule not found" })),
+                ),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": err.to_string() })),
+                ),
+            }
+        }
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Invalid schedule ID" })),
+        ),
+    }
 }

@@ -106,6 +106,7 @@ pub enum ScanEvent {
 pub struct ConnectionMetadata {
     pub connection_id: Uuid,
     pub filter_scan_id: Option<Uuid>,
+    pub filter_scan_ids: Option<std::collections::HashSet<Uuid>>, // Issue #9: Multiple scan IDs
     pub connected_at: DateTime<Utc>,
 }
 
@@ -149,6 +150,7 @@ impl EventBus {
         let metadata = ConnectionMetadata {
             connection_id,
             filter_scan_id: None,
+            filter_scan_ids: None,
             connected_at: Utc::now(),
         };
         
@@ -165,14 +167,39 @@ impl EventBus {
 
     /// Subscribe to events for a specific scan_id, returns a filtered receiver
     pub async fn subscribe_filtered(&self, filter_scan_id: Uuid) -> mpsc::UnboundedReceiver<ScanEvent> {
+        self.subscribe_filtered_multiple(vec![filter_scan_id]).await
+    }
+    
+    /// Subscribe to events for multiple scan_ids (Issue #9)
+    /// Security: Limited to MAX_SCAN_IDS (10) to prevent DoS
+    pub async fn subscribe_filtered_multiple(
+        &self, 
+        filter_scan_ids: Vec<Uuid>
+    ) -> mpsc::UnboundedReceiver<ScanEvent> {
+        use std::collections::HashSet;
+        
+        const MAX_SCAN_IDS: usize = 10;
+        
+        // Security: Limit number of scan IDs to prevent resource exhaustion
+        let ids: HashSet<Uuid> = filter_scan_ids.into_iter()
+            .take(MAX_SCAN_IDS)
+            .collect();
+        
+        if ids.is_empty() {
+            // Return empty channel if no valid IDs
+            let (_, rx) = mpsc::unbounded_channel();
+            return rx;
+        }
+        
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (filtered_tx, filtered_rx) = mpsc::unbounded_channel();
         
-        // Track connection
+        // Track connection with multiple scan IDs
         let connection_id = Uuid::new_v4();
         let metadata = ConnectionMetadata {
             connection_id,
-            filter_scan_id: Some(filter_scan_id),
+            filter_scan_id: ids.iter().next().copied(), // Primary ID for tracking
+            filter_scan_ids: Some(ids.clone()),
             connected_at: Utc::now(),
         };
         
@@ -184,13 +211,18 @@ impl EventBus {
             conns.push(metadata);
         }
         
-        info!("SSE client {} connected (filtered: {})", connection_id, filter_scan_id);
+        info!(
+            "SSE client {} connected (filtered: {} scan IDs)", 
+            connection_id, 
+            ids.len()
+        );
         
-        // Spawn a task to filter events
+        // Spawn a task to filter events for any of the scan IDs
         let event_bus = self.clone();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                if event.scan_id() == filter_scan_id {
+                // Check if event's scan_id is in our filter set
+                if ids.contains(&event.scan_id()) {
                     if filtered_tx.send(event).is_err() {
                         // Client disconnected, cleanup connection metadata
                         event_bus.cleanup_connection(connection_id).await;

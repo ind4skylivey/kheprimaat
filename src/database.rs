@@ -93,6 +93,27 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Schedule table for Issue #11
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS schedules (
+                id TEXT PRIMARY KEY,
+                target_domain TEXT NOT NULL,
+                target_scope TEXT NOT NULL,
+                config_name TEXT NOT NULL,
+                cron_expression TEXT NOT NULL,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_run TEXT,
+                next_run TEXT NOT NULL,
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                priority TEXT NOT NULL DEFAULT 'normal'
+            );"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         // best-effort migrations for existing DBs
         let _ = sqlx::query("ALTER TABLE findings ADD COLUMN confidence_score REAL;")
             .execute(&self.pool)
@@ -562,5 +583,201 @@ fn parse_scan_status(value: String) -> crate::models::ScanStatus {
         "cancelled" => crate::models::ScanStatus::Cancelled,
         "running" => crate::models::ScanStatus::Running,
         _ => crate::models::ScanStatus::Pending,
+    }
+}
+
+// Issue #11: Schedule management functions
+impl Database {
+    /// Count schedules by user
+    pub async fn count_schedules_by_user(&self,
+        user_id: &str,
+    ) -> Result<usize> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM schedules WHERE created_by = $1")
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await?;
+        
+        let count: i64 = row.try_get("count")?;
+        Ok(count as usize)
+    }
+
+    /// Count all schedules
+    pub async fn count_all_schedules(&self,
+    ) -> Result<usize> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM schedules")
+            .fetch_one(&self.pool)
+            .await?;
+        
+        let count: i64 = row.try_get("count")?;
+        Ok(count as usize)
+    }
+
+    /// Check if schedule exists
+    pub async fn schedule_exists(
+        &self,
+        user_id: &str,
+        target: &str,
+        cron: &str,
+    ) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) as count FROM schedules WHERE created_by = $1 AND target_domain = $2 AND cron_expression = $3"
+        )
+        .bind(user_id)
+        .bind(target)
+        .bind(cron)
+        .fetch_one(&self.pool)
+        .await?;
+        
+        let count: i64 = row.try_get("count")?;
+        Ok(count > 0)
+    }
+
+    /// Save a schedule
+    pub async fn save_schedule(
+        &self,
+        schedule: &crate::scheduler::ScanSchedule,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO schedules 
+               (id, target_domain, target_scope, config_name, cron_expression, timezone, 
+                enabled, last_run, next_run, created_by, created_at, retry_count, priority)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+               ON CONFLICT(id) DO UPDATE SET
+               enabled = $7, last_run = $8, next_run = $9, retry_count = $12"#,
+        )
+        .bind(schedule.id.to_string())
+        .bind(&schedule.target.domain)
+        .bind(serde_json::to_string(&schedule.target.scope)?)
+        .bind("default") // config name
+        .bind(&schedule.cron_expression)
+        .bind(&schedule.timezone)
+        .bind(if schedule.enabled { 1 } else { 0 })
+        .bind(schedule.last_run.map(|d| d.to_rfc3339()))
+        .bind(schedule.next_run.to_rfc3339())
+        .bind(&schedule.created_by)
+        .bind(schedule.created_at.to_rfc3339())
+        .bind(schedule.retry_count as i64)
+        .bind(format!("{:?}", schedule.priority).to_lowercase())
+        .execute(&self.pool)
+        .await?;
+        
+        Ok(())
+    }
+
+    /// Get schedules due before a given time
+    pub async fn get_due_schedules(
+        &self,
+        before: DateTime<Utc>,
+    ) -> Result<Vec<crate::scheduler::ScanSchedule>> {
+        let rows = sqlx::query(
+            "SELECT * FROM schedules WHERE next_run <= $1 AND enabled = 1"
+        )
+        .bind(before.to_rfc3339())
+        .fetch_all(&self.pool)
+        .await?;
+        
+        let mut schedules = Vec::new();
+        for row in rows {
+            schedules.push(self.row_to_schedule(&row).await?);
+        }
+        
+        Ok(schedules)
+    }
+
+    /// Get schedule by ID
+    pub async fn get_schedule(
+        &self,
+        schedule_id: &Uuid,
+    ) -> Result<Option<crate::scheduler::ScanSchedule>> {
+        let row = sqlx::query("SELECT * FROM schedules WHERE id = $1")
+            .bind(schedule_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        
+        match row {
+            Some(r) => Ok(Some(self.row_to_schedule(&r).await?)),
+            None => Ok(None),
+        }
+    }
+
+    /// List all schedules for a user
+    pub async fn list_schedules(
+        &self,
+        user_id: Option<&str>,
+    ) -> Result<Vec<crate::scheduler::ScanSchedule>> {
+        let rows = if let Some(uid) = user_id {
+            sqlx::query("SELECT * FROM schedules WHERE created_by = $1 ORDER BY created_at DESC")
+                .bind(uid)
+                .fetch_all(&self.pool)
+                .await?
+        } else {
+            sqlx::query("SELECT * FROM schedules ORDER BY created_at DESC")
+                .fetch_all(&self.pool)
+                .await?
+        };
+        
+        let mut schedules = Vec::new();
+        for row in rows {
+            schedules.push(self.row_to_schedule(&row).await?);
+        }
+        
+        Ok(schedules)
+    }
+
+    /// Delete a schedule
+    pub async fn delete_schedule(
+        &self,
+        schedule_id: &Uuid,
+    ) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM schedules WHERE id = $1")
+            .bind(schedule_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Convert database row to Schedule
+    async fn row_to_schedule(
+        &self,
+        row: &AnyRow,
+    ) -> Result<crate::scheduler::ScanSchedule> {
+        use crate::scheduler::ScanSchedule;
+        use crate::priority_queue::Priority;
+        
+        let scope_json: String = row.try_get("target_scope")?;
+        let scope: Vec<String> = serde_json::from_str(&scope_json).unwrap_or_default();
+        
+        let priority_str: String = row.try_get("priority")?;
+        let priority = match priority_str.to_lowercase().as_str() {
+            "high" => Priority::High,
+            "low" => Priority::Low,
+            _ => Priority::Normal,
+        };
+        
+        Ok(ScanSchedule {
+            id: Uuid::parse_str(row.try_get::<String, _>("id")?.as_str())?,
+            target: crate::models::Target {
+                id: Some(Uuid::new_v4()),
+                domain: row.try_get("target_domain")?,
+                scope,
+                status: crate::models::TargetStatus::Active,
+                created_at: parse_datetime(row.try_get::<String, _>("created_at")?),
+                last_scan: None,
+                notes: None,
+            },
+            config: crate::models::ScanConfig::default(),
+            cron_expression: row.try_get("cron_expression")?,
+            timezone: row.try_get("timezone")?,
+            enabled: row.try_get::<i64, _>("enabled")? == 1,
+            last_run: row
+                .try_get::<Option<String>, _>("last_run")?
+                .map(|s| parse_datetime(s)),
+            next_run: parse_datetime(row.try_get::<String, _>("next_run")?),
+            created_by: row.try_get("created_by")?,
+            created_at: parse_datetime(row.try_get::<String, _>("created_at")?),
+            retry_count: row.try_get::<i64, _>("retry_count")? as u32,
+            priority,
+        })
     }
 }
